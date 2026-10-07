@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "job-agent-workspace"
+version = "0.1.0"
+description = "An AI-managed job search workspace"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp==1.26.0"]
+
+[project.scripts]
+job-agent = "job_agent.cli:main"
+job-agent-mcp = "job_agent.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["job_agent*"]

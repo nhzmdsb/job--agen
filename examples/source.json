@@ -1,0 +1,9 @@
+{
+  "name": "示例信息源（未接入）",
+  "url": "https://example.com/jobs",
+  "enabled": false,
+  "access_method": "待确认",
+  "scope": "待用户指定",
+  "checkpoint": null,
+  "notes": "虚构样例，不代表真实招聘源"
+}
