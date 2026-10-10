@@ -1,89 +1,43 @@
-# Job Agent Workspace
+# 个人求职工作台 V0
 
-供 AI 管理的求职搜索池框架。AI 使用自己的搜索、浏览器或 CLI 能力读取信息源，通过本项目保存线索、岗位、判断和搜索进度。
+2026-10-11：在原项目上新增可操作工作台，保留 Python、SQLite、记录 envelope、版本检查、完整历史、CLI 和 MCP。此版本取代旧计划中的「禁止 GUI」「采集优先」「生命周期以后实现」。后台自动化整理信息，用户决定策略、简历和最终申请；程序不自动投递。
 
-当前提供本地 SQLite 存储、JSON CLI、可选 stdio MCP、修改历史与并发版本检查。飞书来源已由 AI 实际读取并保存到私有交付数据中；仓库本身不包含网页采集器、真实数据或模型调用，也不会自动投递。小红书与 BOSS 项目已做云端试跑，尚未完成真实搜索接入。
+## 打开和使用
 
-## 当前目标与接替入口
+Windows 双击 `start-workbench.cmd`，浏览器打开 http://127.0.0.1:18765 。首次启动安装 Flask 和 Waitress；之后直接启动。关闭启动窗口会停止本地服务。仅监听本机。
 
-当前重心是**扩展信息源池**，优先验证小红书与 BOSS 的搜索、详情读取，而不是继续深挖飞书内少数公司。先根据需求设计工作流，再选择技术；先完成最小存储框架，再逐个接通来源，用真实样本验证。
+主页面看岗位卡片，右侧切换机会池、准备投递、已投递、面试中、已结束和垃圾桶。点卡片编辑详情后保存；备注自动保存并显示状态。四色由资格证据和兴趣决定，颜色与进度独立，未知资格或缺 JD 为灰色；人工调整必须填写原因。没有匹配分数。招聘年份、面向届别和允许申请年份分别记录，不能把「2026 招聘」推断为「2026 届可申请」。
 
-- [交接说明](docs/handoff.md)：已确定的计划、工作顺序、数据恢复、来源角色和持续交接约定。
-- [当前执行任务 #1](https://github.com/nhzmdsb/job--agen/issues/1)：候选项目、云端试跑结果、阻塞、待办和验收条件。读取正文和后续评论，确认最新进度。
-- [来源筛选](docs/source-selection.md)、[飞书读取](docs/feishu-workflow.md)、[公司与岗位扫描](docs/job-selection.md)：已有工作流约定。
+岗位详情可以上传真实 PDF/DOCX、下载原文件、选择四种准备任务并生成 Prompt。复制后打开 ChatGPT 粘贴；附件需要在新会话另行上传，Prompt 不表示 ChatGPT 已读取附件。超出公司同批次名额时必须明确确认并填写原因。垃圾桶保留去重标识，已结束保留历史。
 
-新接替的 Agent 不应假定有全局聊天记忆。先读 README → AGENTS.md → handoff → 当前 Issue → 相关工作流，再读取用户本地私有数据。个人求职条件以私有 profiles 或用户补充为准，不能从通用样例推断。
+## 数据与协作
 
-程序负责访问、存储、读取、版本与历史；AI 负责搜索规划、去重、补全、匹配和策略。不要为这些判断增加确定性评分、自动合并或复杂状态机。
+个人工作副本、附件、设置、备份位于 `%LOCALAPPDATA%\JobAgent`；可用 `JOB_AGENT_HOME` 调整。原 `data/workspace.sqlite3` 被保留，默认数据库首次迁移前用 SQLite 备份。公开仓库只存代码、文档和虚构测试数据。
 
-## 安装与启动
+私有 GitHub 仓库优先作为共享权威源。本次已建立并验证 `nhzmdsb/job--agen-data` 私有属性与真实读写。`settings.json` 只记录 `{"repository":"nhzmdsb/job--agen-data"}`；凭据由现有 Git Credential Manager 提供，不写入配置或浏览器。连接任何仓库前检查私有属性。云端不可用时本地照常保存并显示待同步。
 
-需要 Python 3.10+。在仓库目录中：
+每次修改同时保存版本、历史和待同步事项。后台在写入后、启动时同步；页面刷新发起检查，每六小时补充维护。不同记录可合并，同一记录并发修改保留双方，在页面选择合并，双方完整历史归档到私有仓库。同步 JSON 与按 SHA-256 保存的原文件，不同步 SQLite 文件。运行依赖电脑开机且本地服务运行；定时 Work 任务另见交接记录。
 
-```bash
-python -m venv .venv
-# macOS/Linux
-source .venv/bin/activate
-# Windows PowerShell 改用 .venv\Scripts\Activate.ps1
-python -m pip install -e .
-job-agent init
-job-agent list sources
+读取后保留未知字段，版本化写入，不能强制覆盖。[共享协作协议](docs/COLLABORATION.md) 包含 HTTP、CLI、MCP 和私有仓库写入方式。
+
+## 开发与验证
+
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[mcp]"
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m job_agent.web --no-browser
 ```
 
-可不安装，直接在仓库目录运行 `python -m job_agent.cli`。默认数据库为当前目录的 `data/workspace.sqlite3`。CLI 可用 `--db` 指定绝对路径；MCP 请通过 `JOB_AGENT_DB` 设置绝对路径，避免不同运行目录产生不同搜索池。
+CLI：`python -m job_agent.cli init/list/get/put/history/export/import/sync`，JSON 从标准输入读取。`put` 更新必须提供 `--expected-version`，并提交保留未知字段的完整 data。MCP：`python -m job_agent.mcp_server`，仍为 stdio，复用同一存储。历史导入先验证完整快照再原子恢复，保留原 ID、版本和历史。
 
-## AI 的读写方式
+官方来源补充：`python -m job_agent.collect` 读取已验证的 Canonical 官方岗位，保存完整 JD、原始入口、访问时间和证据；未变化时不重复写入。新增来源须先验证可访问性，不能把招聘活动年份推断成申请资格。已创建「求职工作台六小时维护」Work 定时任务（本机需开机且应用运行）；任务只报告新增机会、失败或需要处理的事项，自动投递不在范围内。
 
-`sources` 保存信息源与读取方法；`leads` 保存原始线索；`jobs` 保存岗位及 AI 判断；`runs` 保存搜索任务、进度与失败原因；`artifacts` 保存材料内容或文件引用；`profiles` 保存用户自己提供的求职条件。
+## 当前真实状态
 
-数据是自由 JSON 对象。建议字段见 [记录约定](docs/records.md)，它们不是强制业务规则。新建数据库初始为空；接替时优先使用已交付的私有数据库，不能把一个新空库误认为原搜索池。
+- 已读取 Canonical 官方 Graduate Software Engineer 完整 JD，原文明确提及 2025/2026 毕业生；个人专业、学历等资格尚未核对，因此保持灰色。
+- 已验证私有 GitHub 独立读回、远端修改回流、真实来源 HTML 二进制往返、同岗位冲突双方归档。
+- 旧数据库为空；未找到 `search-pool-20261008.zip`。交接中的 64 个历史岗位没有恢复，不能视为当前数据。没有找到真实简历，真实简历验收未完成；测试文件不是个人简历。
+- BOSS、小红书、微信公众号仍是独立待办，不阻塞工作台。不会自动公司背调、删掉证据不足的机会或提交申请。
 
-创建时从 stdin 提供 JSON（避免在 shell 参数中直接插入网页文本）：
-
-```bash
-job-agent put sources --id example-source < examples/source.json
-job-agent get sources example-source
-job-agent list leads --limit 50 --offset 0
-```
-
-修改时先读取，保留原字段并提供完整的新 JSON 对象，以及刚读取的版本：
-
-```bash
-job-agent put sources --id example-source --expected-version 1 --reason "用户确认读取范围" < examples/source.json
-job-agent history sources example-source
-job-agent export > private-backup.json
-```
-
-`put` 是完整替换，不是字段 patch。版本冲突时重新读取后再修改。恢复旧版本：读取当前版本，取历史中的旧 `data`，用当前版本再次写入；历史不会被删除。分页读取要持续跟随 `next_offset`，直到为 null。导出包含全部记录和历史，备份文件需放在仓库之外或 `private/` 中。
-
-## MCP
-
-```bash
-python -m pip install -e '.[mcp]'
-job-agent-mcp
-```
-
-复用官方 Python MCP SDK 的 1.26.0 版本；只提供 stdio，不开放网络服务。支持工具：`list_records`、`read_record`、`write_record`、`read_history`。由宿主 Agent 负责搜索、补全、去重和判断。
-
-支持 stdio MCP 的客户端可参考以下配置；替换成实际绝对路径，具体配置位置依客户端而定：
-
-```json
-{
-  "mcpServers": {
-    "job-agent": {
-      "command": "/absolute/path/to/.venv/bin/job-agent-mcp",
-      "env": {"JOB_AGENT_DB": "/absolute/path/to/private/workspace.sqlite3"}
-    }
-  }
-}
-```
-
-Windows 使用 `.venv\\Scripts\\job-agent-mcp.exe` 的绝对路径。云端不会自动访问本地数据库，后续共享存储方案由信息源和使用方式决定。
-
-## 验证
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-开发约定见 [AGENTS.md](AGENTS.md)，工作流见 [workflow.md](docs/workflow.md)。代码仓库不存真实简历、账号凭证或求职记录。
+[本次验收](docs/v0-acceptance.md) · [当前交接与旧计划](docs/handoff.md) · [记录约定](docs/records.md) · [历史验证](docs/verification.md)

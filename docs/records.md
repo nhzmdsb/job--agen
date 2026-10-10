@@ -1,3 +1,18 @@
+# 当前工作台数据约定（2026-10-11）
+
+保留外层 collection/id/version/created_at/updated_at 和自由 data；未知字段必须保留。jobs 工作台字段：company/title、jd/url/boss_url、salary/city/education/experience/tags、recruitment_year/target_cohort/eligible_years、qualification/qualification_evidence、interest/color/color_reason、cycle/notes、artifacts、application_history/outcome、dedupe_keys。年份字段不互相推断；未知资格不排除。
+
+stage 为 pool/preparing/applied/interview/ended/trash。资格 unknown/eligible/disadvantage 与兴趣分别记录。灰色代表未知资格或缺 JD，黄色代表已知不利条件，符合且有兴趣为绿色，符合但兴趣未定为米色。人工颜色需原因，不能掩盖缺失资格/JD。
+
+profiles 中 `company-quotas` 的 items 为 company/cycle/limit。企业同批次已申请记录和历史计入名额；超额必须确认并保存 quota_override_reason。垃圾桶保留原始去重标识，不能自动恢复。
+
+artifacts 的 data 保存 name/kind/sha256/size 等，二进制位于私有 attachments/{sha256}，jobs.artifacts 关联记录。真实 PDF/DOCX 可上传下载且核验哈希；仅名称/引用的旧附件标记「原文件未恢复」。来源资料与简历明确区分。
+
+SQLite 是私有本地工作副本；私有 GitHub JSON 保存当前记录与完整历史，二进制另存。每次写入事务同时追加历史和待同步；导入验证完整历史后保留原 ID/版本。下面旧约定仍可帮助理解自由字段；其中「只保存附件引用」「共享存储以后再做」已被上述实现取代。
+
+---
+## 旧自由记录建议（历史保留）
+
 # 自由记录的建议约定
 
 所有记录由外层统一管理 `collection/id/version/created_at/updated_at`，AI 自由管理内层 `data`。引用其他记录时使用其 collection 和 id。以下字段仅供协作参考，不是数据库约束。

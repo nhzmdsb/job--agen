@@ -7,7 +7,7 @@ name = "job-agent-workspace"
 version = "0.1.0"
 description = "An AI-managed job search workspace"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["Flask==3.1.3", "waitress==3.0.2"]
 
 [project.optional-dependencies]
 mcp = ["mcp==1.26.0"]
@@ -15,6 +15,10 @@ mcp = ["mcp==1.26.0"]
 [project.scripts]
 job-agent = "job_agent.cli:main"
 job-agent-mcp = "job_agent.mcp_server:main"
+job-agent-web = "job_agent.web:main"
 
 [tool.setuptools.packages.find]
 include = ["job_agent*"]
+
+[tool.setuptools.package-data]
+job_agent = ["static/*"]
