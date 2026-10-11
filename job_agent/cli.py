@@ -12,6 +12,7 @@ def main():
     sub.add_parser("export")
     sub.add_parser("import")
     sub.add_parser("sync")
+    sub.add_parser("review-pending")
     for command in ("list", "get", "put", "history"):
         p = sub.add_parser(command)
         p.add_argument("collection", choices=COLLECTIONS)
@@ -39,6 +40,9 @@ def main():
         elif args.command == "sync":
             from .sync import Sync
             result = Sync(store).run()
+        elif args.command == "review-pending":
+            from .review import review_queue
+            result = review_queue(store)
         elif args.command == "list":
             result = store.list(args.collection, args.limit, args.offset)
         elif args.command == "put":

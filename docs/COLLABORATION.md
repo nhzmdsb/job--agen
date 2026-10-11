@@ -33,3 +33,23 @@ CLI `python -m job_agent.cli` 的 list/get/put/history/export/import/sync 使用
 本地同步合并不同记录；同一记录两端修改保留双方，用户合并后保存新版本，并将两条完整历史保存到私有 conflict-history。禁止直接删除远端记录来清理：使用 trash，保留去重和历史。远端删除被视作需处理的冲突。
 
 本地写入后的同步、启动/刷新检查和六小时维护需要本机开机、应用运行及网络；离线仍可本地编辑，之后重试。外部招聘登录/反爬限制应记录来源状态并保留线索，不阻塞核心工作台。
+
+
+## Work 处理与档案维护（#4/#3/#6/#5/#7）
+
+| 操作 | 接口 |
+| --- | --- |
+| 读取/维护档案 | GET /api/profile；PUT /api/profile，JSON {expected_version,patch} |
+| 确认 Notion 差异 | POST /api/profile/confirm，JSON {expected_version,proposal_version} |
+| 只读待处理清单 | GET /api/review-queue；CLI review-pending |
+| 处理 Prompt | POST /api/review-prompt，JSON {notion:false}；true 表示请求重读 Notion |
+
+Notion 重读只创建/更新 profiles/candidate-proposal：base_version 为读取时 candidate 版本，patch 包含完整待修改顶层字段（保留子字段）、sources、reason、status=pending。不能自动写 candidate；用户确认时检查档案与建议双版本，冲突需重读。不建设 Notion 双向同步，不宣称按钮已执行任务。
+
+从清单读取真实档案、岗位记录、job_hash、tasks；逐项核对 graduation/education/major/experience/responsibilities/preferences。保存 screening.work 的 decision、reason、checks、questions、profile_version、job_hash、assessed_at。checks 各项包含 dimension、kind（mandatory/preferred/inferred/unknown/unacceptable）、status（pass/fail/unknown）、reason、jd_quote、profile_fact。确定结论引用已保存 JD；毕业窗口也可引用 graduation_windows 的完整 quote 并提供对应 evidence_url。程序检查只验证数据契约，不能替代 Work 语义理解。强制不符或明确不能接受才 ineligible；优先条件不符仍可申请，专业相关无法确认或职业方向不同不排除。
+
+job_hash 直接使用队列提供值，计算方式见 records.md。档案或岗位事实变化后旧 Work 结论失效；备注不失效。翻译另存 translation={title_zh,summary_zh,source_hash:job_hash,generated_at}，不改原始 title/jd。没有有效翻译仍显示原文，不阻塞资格判断。人工备注/兴趣/颜色/展示决定、附件和投递进度必须保留；垃圾桶不恢复，已投递及后续阶段不自动调整。
+
+来源问题 source_problems 的 pending 进入清单；有实际新证据才标记核验完成，访问失败保留原文并说明未知。每批在 runs 记录完成、失败、剩余，工作中断后重新读取队列续跑；无变化不追加无意义版本。写回继续用原版本化 HTTP/CLI 或 GitHub SHA 检查，409/422 重新读取，不覆盖用户更新。
+
+六小时岗位发现任务先发现/提取，再处理清单中的判断与翻译并同步。同步维护任务不承担岗位发现、语义判断或翻译。定时规则被保存不等于首次定时运行已验证，执行依赖电脑、应用与网络。

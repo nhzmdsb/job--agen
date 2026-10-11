@@ -4,6 +4,7 @@ const colors = {green:'符合且有吸引力',yellow:'有不利条件',beige:'�
 let records = [], artifacts = [], quota = {version:0,data:{items:[]}}, stage = 'pool', current = null;
 let saving = Promise.resolve(), noteTimer, dirtyNotes = false, noteConflict = null, syncConflict = null, resolvedData = {}, lastChecked;
 let quotaRequest = null;
+let profileRecord = null, profileProposal = null;
 const form = $('job-form');
 
 async function api(path, method='GET', data) {
@@ -16,6 +17,7 @@ async function api(path, method='GET', data) {
 }
 function toast(message) { $('toast').textContent=message; $('toast').hidden=false; setTimeout(()=>{$('toast').hidden=true;},5000); }
 function node(tag, text, className) { const el=document.createElement(tag); if(text!==undefined) el.textContent=text; if(className) el.className=className; return el; }
+function safeLink(url, label) { const a=node('a',label); if(/^https?:\/\//i.test(url)){a.href=url;a.target='_blank';a.rel='noopener noreferrer';} return a; }
 function dataStage(r) { return r.data.stage || 'pool'; }
 function remember(record) { const i=records.findIndex(r=>r.id===record.id); if(i<0) records.push(record); else records[i]=record; }
 function render() {
@@ -27,17 +29,18 @@ function render() {
   $('stage-title').textContent=stage==='pool'?'看机会':stages[stage];
   $('stage-description').textContent=stage==='trash'?'已删除机会保留去重记录，不会因重复采集重新出现。':stage==='ended'?'保留申请过程与结果，为之后的选择提供依据。':'先看岗位，再决定如何行动。资料不全的线索也会保留。';
   const term=$('search').value.trim().toLowerCase(), filter=$('color-filter').value;
-  const shown=records.filter(r=>dataStage(r)===stage && (!filter || r.data.display_color===filter) && (!term || JSON.stringify(r.data).toLowerCase().includes(term))).reverse();
+  $('low-filter').hidden=stage!=='pool'; $('low-count').textContent=records.filter(r=>r.view.low_priority).length;
+  const shown=records.filter(r=>dataStage(r)===stage && (stage!=='pool' || $('show-low').checked || !r.view.low_priority) && (!filter || r.view.color===filter) && (!term || JSON.stringify(r.data).toLowerCase().includes(term))).reverse();
   const cards=$('cards'); cards.replaceChildren();
   for (const record of shown) {
-    const d=record.data, color=d.display_color || 'grey';
-    const card=node('button',undefined,'card '+color); card.setAttribute('aria-label',`${d.company} ${d.title} ${colors[color]}`);
-    const top=node('div',undefined,'top'); top.append(node('h2',d.title),node('span',d.salary || '薪资待确认','salary'));
+    const d=record.data, view=record.view, color=view.color;
+    const card=node('button',undefined,'card '+color); card.setAttribute('aria-label',`${d.company} ${view.title} ${colors[color]}`);
+    const top=node('div',undefined,'top'); top.append(node('h2',view.title),node('span',d.salary || '薪资待确认','salary'));
     const company=node('div',d.company,'company'); if(d.possible_no_fit) company.append(node('span','  ! 可能暂无合适岗位','warning'));
     card.append(top,company,node('div',[d.city || '城市未知',d.education || '学历待核对',d.experience || '经验待核对'].join(' · '),'metadata'));
     const tags=node('div',undefined,'tags'); const values=Array.isArray(d.tags)?d.tags:[];
     for(const tag of values.slice(0,6)) tags.append(node('span',tag,'tag'));
-    card.append(tags,node('p',d.summary || (d.jd ? d.jd.slice(0,170) : '已保留招聘入口，完整 JD 尚未取得。'),'summary'));
+    card.append(tags,node('p',view.summary || (d.jd ? d.jd.slice(0,170) : '已保留招聘入口，完整 JD 尚未取得。'),'summary'),node('p',`${view.origin}：${view.reason}${view.low_priority?' · 低优先机会':''}`,'judgment'));
     const foot=node('div',undefined,'card-footer'); foot.append(node('span',colors[color]),node('span',d.eligible_years?`可申请毕业年份：${d.eligible_years}`:'毕业年份待确认')); card.append(foot);
     card.onclick=()=>openJob(record); cards.append(card);
   }
@@ -45,7 +48,7 @@ function render() {
   if(records.length) {$('empty').querySelector('h2').textContent='这里暂时没有机会'; $('empty').querySelector('p').textContent='可以切换进度、调整筛选，或保存新的招聘线索。';}
 }
 async function refresh() {
-  const data=await api('/api/jobs'); records=data.items; artifacts=data.artifacts; quota=data.quotas; render();
+  const data=await api('/api/jobs'); records=data.items; artifacts=data.artifacts; quota=data.quotas; $('review-count').textContent=data.review_count; render();
 }
 function fillForm(data) {
   form.reset();
@@ -55,7 +58,7 @@ function fillForm(data) {
 function fillSide() {
   $('stage-select').value=current?dataStage(current):'pool';
   $('detail-company').textContent=current?.data.company || '保留线索，稍后补全';
-  $('detail-title').textContent=current?.data.title || '保存机会';
+  $('detail-title').textContent=current?.view.title || '保存机会';
   const links=$('source-links'); links.replaceChildren();
   for(const [key,label] of [['url','原始来源 ↗'],['boss_url','BOSS 来源 ↗']]) {
     const url=current?.data[key]; if(!url || !/^https?:\/\//i.test(url))continue;
@@ -71,7 +74,35 @@ function fillSide() {
   }
   if(!ids.length)box.append(node('p','尚未关联真实简历','muted'));
   for(const id of ['stage-select','notes','upload','generate-prompt'])$(id).disabled=!current;
+  if(current)fillReading();
 }
+const dimensionLabels={graduation:'毕业资格',education:'学历',major:'专业',experience:'经验',responsibilities:'职责关联',preferences:'求职偏好'};
+const kindLabels={mandatory:'强制要求',preferred:'优先条件',inferred:'推断',unknown:'未知',unacceptable:'明确不能接受'};
+function fillReading() {
+  const d=current.data,v=current.view,work=d.screening?.work;
+  $('read-facts').textContent=[d.city||'地点待确认',d.salary||'薪资待确认',d.education||'学历待确认',d.experience||'经验待确认',`招聘年份：${d.recruitment_year||'未知'}`,`面向届别：${d.target_cohort||'未知'}`,`允许毕业年份：${d.eligible_years||'未知'}`].join(' · ');
+  $('read-summary').textContent=v.summary||'尚无中文摘要';
+  $('translation-status').textContent=v.translation_valid?'中文标题与摘要由 Work 整理，原文保留在下方。':v.translation_pending?'中文标题与摘要待 Work 更新，当前保留原文。':'';
+  $('read-reason').textContent=`${v.origin} · ${colors[v.color]}：${v.reason}`;
+  const evidence=$('read-evidence');evidence.replaceChildren();
+  if(work) {
+    if(v.stale)evidence.append(node('p','以下是失效的旧判断，仅供参考，不用于自动折叠或着色。','warning'));
+    for(const c of work.checks||[]) {
+      const box=node('section',undefined,'evidence-item');box.append(node('strong',`${dimensionLabels[c.dimension]} · ${kindLabels[c.kind]} · ${{pass:'符合',fail:'不符',unknown:'待确认'}[c.status]}`),node('p',c.reason),node('p',`JD 依据：${c.jd_quote||'原文未明确'}`),node('p',`档案事实：${c.profile_fact}`));if(c.evidence_url)box.append(safeLink(c.evidence_url,'资格原始来源'));evidence.append(box);
+    }
+    for(const q of work.questions||[])evidence.append(node('p',`待确认：${q}`));
+    evidence.append(node('small',`档案 v${work.profile_version} · 判断时间 ${work.assessed_at}`));
+  }
+  if(d.screening)evidence.append(node('p',`程序辅助检查（不能代替 Work 判断）：${JSON.stringify(Object.fromEntries(Object.entries(d.screening).filter(([k])=>k!=='work')))}`,'muted'));
+  if(d.color_reason)evidence.append(node('p',`人工调整：${d.color_reason}`));
+  $('restore-pool').hidden=!v.low_priority;
+  $('fold-pool').hidden=!(dataStage(current)==='pool' && d.pool_visibility==='show' && v.fresh && work?.decision==='ineligible');
+  $('original-title').textContent=`原始岗位名称：${d.title}`; $('read-jd').textContent=d.jd||'完整 JD 尚未取得，已保留原始入口。';
+  $('read-source-evidence').textContent=typeof d.qualification_evidence==='string'?d.qualification_evidence:JSON.stringify(d.qualification_evidence||'');
+  const problems=$('source-problems');problems.replaceChildren();for(const p of d.source_problems||[])problems.append(node('p',`${p.status==='resolved'?'已核验':'待核验'}：${p.description}`));
+}
+function readingMode() { $('read-pane').hidden=!current;form.hidden=!!current; $('quick-form').hidden=!current; }
+function fillQuick() {for(const f of $('quick-form').elements){if(f.name)f.value=f.name==='tags'?(current.data.tags||[]).join('，'):current.data[f.name]|| (f.name==='interest'?'unknown':'');}}
 async function history() {
   $('history').replaceChildren(); if(!current)return;
   const result=await api(`/api/records/jobs/${encodeURIComponent(current.id)}`);
@@ -83,7 +114,7 @@ async function openJob(record=null) {
   fillForm(current?.data || {}); $('notes').value=current?.data.notes||''; dirtyNotes=false; noteConflict=null;
   $('note-conflict').hidden=true; $('note-status').textContent='编辑后自动保存';
   for(const id of ['form-status','upload-status','prompt-status','prompt','description']) { if('value' in $(id))$(id).value=''; else $(id).textContent=''; }
-  fillSide(); if(!$('detail').open)$('detail').showModal(); await history();
+  fillSide();readingMode();if(current)fillQuick(); if(!$('detail').open)$('detail').showModal(); await history();
 }
 function formData() {
   const data={}; for(const field of form.elements) { if(!field.name)continue; data[field.name]=field.type==='checkbox'?field.checked:field.value.trim(); }
@@ -124,7 +155,7 @@ form.onsubmit=async event=> {
   try {
     const data=formData();
     if(current) await patchCurrent(data); else {current=await api('/api/jobs','POST',{data:{...data,stage:'pool',notes:''}}); remember(current);}
-    $('form-status').textContent='岗位资料已保存'; await refresh(); fillSide(); await history();
+    $('form-status').textContent='岗位资料已保存'; await refresh(); fillSide();readingMode();fillQuick(); await history();
   } catch(error) { $('form-status').textContent=error.message; if(error.result?.current) {toast('岗位资料已更新，请关闭并重新打开；您填写的内容仍保留在表单。');} }
 };
 $('stage-select').onchange=async()=> {
@@ -172,6 +203,50 @@ $('copy-prompt').onclick=async()=> {
 async function closeDetail() {if(await flushNotes())$('detail').close();else toast('备注尚未保存，请先处理冲突或恢复连接');}
 $('close-detail').onclick=closeDetail; $('detail').addEventListener('cancel',event=>{event.preventDefault();closeDetail();});
 $('add-button').onclick=()=>openJob(); $('empty-add').onclick=()=>openJob(); $('search').oninput=render; $('color-filter').onchange=render;
+$('show-low').onchange=render;
+$('edit-facts').onclick=()=>{fillForm(current.data);$('read-pane').hidden=true;form.hidden=false;};
+$('quick-form').onsubmit=async event=>{event.preventDefault();if(!(await flushNotes()))return;const patch={};for(const f of event.target.elements)if(f.name)patch[f.name]=f.value.trim();patch.tags=patch.tags.split(/[,，]/).map(s=>s.trim()).filter(Boolean);try{await patchCurrent(patch);$('quick-status').textContent='已保存';await refresh();await history();}catch(error){$('quick-status').textContent=error.message;}};
+$('restore-pool').onclick=async()=>{if(!(await flushNotes()))return;try{await patchCurrent({pool_visibility:'show'});await history();}catch(error){toast(error.message);}};
+$('fold-pool').onclick=async()=>{if(!(await flushNotes()))return;try{await patchCurrent({pool_visibility:'auto'});await history();}catch(error){toast(error.message);}};
+$('report-source').onclick=async()=>{const description=$('source-problem').value.trim();if(!description)return;if(!(await flushNotes()))return;await patchCurrent({source_problems:[...(current.data.source_problems||[]),{id:crypto.randomUUID(),description,status:'pending',reported_at:new Date().toISOString()}]});$('source-problem').value='';await refresh();toast('已保存待核验问题，原文保留');};
+const lines=value=>value.split('\n').map(s=>s.trim()).filter(Boolean);
+function experienceEditor(data={}) {
+  const box=node('fieldset',undefined,'experience-editor');box.original=data;
+  for(const [key,label] of [['organization','机构'],['role','角色'],['title','项目名称'],['start_month','开始时间'],['end_month','结束时间'],['facts','已确认事实（每行一项）'],['pending','待确认（每行一项）']]){const l=node('label',label),input=node(['facts','pending'].includes(key)?'textarea':'input');input.name=key;input.value=Array.isArray(data[key])?data[key].join('\n'):data[key]||'';l.append(input);box.append(l);}
+  const remove=node('button','移除此经历');remove.type='button';remove.onclick=()=>box.remove();box.append(remove);$('profile-experiences').append(box);
+}
+async function loadProfile() {
+  const result=await api('/api/profile');profileRecord=result.record;profileProposal=result.proposal;
+  const d=profileRecord?.data||{},c=d.confirmed||{},p=d.preferences||{},f=$('profile-form').elements;
+  const values={education:c.degree_label,institution:c.education_institution,major:c.major,graduation_month:c.graduation_month,formal_work_years:c.formal_experience_years,english:typeof c.english==='object'?c.english?.self_description:c.english,priority:(p.priority_fields||[]).join('\n'),retain:(p.retain_fields||[]).join('\n'),unacceptable:(p.unacceptable_conditions||[]).join('\n'),frontline:p.frontline,locations:(p.location_soft_dispreference||[]).join('，'),exclude_mandatory_formal_experience_from_years:p.exclude_mandatory_formal_experience_from_years,pending_confirmation:(d.pending_confirmation||[]).join('\n')};
+  for(const [key,value] of Object.entries(values))f[key].value=value??'';
+  $('profile-experiences').replaceChildren();for(const e of c.experience||[])experienceEditor(e);
+  const sources=$('profile-sources');sources.replaceChildren();for(const s of d.sources||[]){const a=node('a',s.title||s.url);if(/^https?:\/\//.test(s.url)){a.href=s.url;a.target='_blank';a.rel='noopener noreferrer';}sources.append(a,node('p',s.page_last_edited_at||''));}
+  $('profile-status').textContent=`档案 v${profileRecord?.version||0} · 留空的信息不会被当作已确认事实`;
+  $('profile-proposal').hidden=profileProposal?.data.status!=='pending';
+  if(profileProposal?.data.status==='pending'){
+    $('proposal-reason').textContent=profileProposal.data.reason;const diff=$('proposal-diff');diff.replaceChildren();
+    for(const [key,value] of Object.entries(profileProposal.data.patch||{})){diff.append(node('h4',key),node('pre',`当前：${JSON.stringify(d[key],null,2)}\n建议：${JSON.stringify(value,null,2)}`));}
+    for(const s of profileProposal.data.sources||[])diff.append(node('p',`建议来源：${s.url||s}`));
+  }
+}
+$('profile-button').onclick=async()=>{await loadProfile();$('profile-dialog').showModal();};
+$('close-profile').onclick=()=>$('profile-dialog').close();
+$('add-experience').onclick=()=>experienceEditor();
+async function updateCurrentProjection(){await refresh();if(current){current=(await api(`/api/records/jobs/${encodeURIComponent(current.id)}`)).record;fillSide();}}
+$('profile-form').onsubmit=async event=>{
+  event.preventDefault();const f=event.target.elements,d=profileRecord?.data||{},c=d.confirmed||{},p=d.preferences||{};
+  const experience=[...$('profile-experiences').children].map(box=>{const e={...box.original};for(const input of box.querySelectorAll('input,textarea')){const value=input.value.trim();e[input.name]=['facts','pending'].includes(input.name)?lines(value):value;}return e;});
+  const patch={confirmed:{...c,degree_label:f.education.value.trim(),education_institution:f.institution.value.trim(),major:f.major.value.trim(),graduation_month:f.graduation_month.value.trim(),formal_experience_years:f.formal_work_years.value===''?null:Number(f.formal_work_years.value),english:typeof c.english==='object'?{...c.english,self_description:f.english.value.trim()}:f.english.value.trim(),experience},preferences:{...p,priority_fields:lines(f.priority.value),retain_fields:lines(f.retain.value),unacceptable_conditions:lines(f.unacceptable.value),frontline:f.frontline.value.trim(),location_soft_dispreference:f.locations.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),exclude_mandatory_formal_experience_from_years:f.exclude_mandatory_formal_experience_from_years.value===''?null:Number(f.exclude_mandatory_formal_experience_from_years.value)},pending_confirmation:lines(f.pending_confirmation.value)};
+  if(patch.confirmed.degree_label!==c.degree_label)patch.confirmed.degree=({'专科':'associate','本科':'bachelor','硕士':'master','博士':'doctor'})[patch.confirmed.degree_label]||null;
+  if(!(await flushNotes()))return;
+  try{profileRecord=await api('/api/profile','PUT',{expected_version:profileRecord?.version||0,patch});$('profile-status').textContent=`档案 v${profileRecord.version} 已保存；岗位待重新判断`;await updateCurrentProjection();}
+  catch(error){$('profile-status').textContent=error.message+'；编辑内容仍保留，请复制后重新打开核对。';}
+};
+$('confirm-proposal').onclick=async()=>{if(!(await flushNotes()))return;try{await api('/api/profile/confirm','POST',{expected_version:profileRecord.version,proposal_version:profileProposal.version});await loadProfile();await updateCurrentProjection();toast('差异已确认，档案与建议历史均保留');}catch(error){$('profile-status').textContent=error.message;}};
+async function showReview(notion=false){const result=await api('/api/review-prompt','POST',{notion});$('review-prompt').value=result.prompt;$('review-status').textContent='复制后粘贴到获授权的会话；未自动执行';$('review-dialog').showModal();}
+$('review-button').onclick=()=>showReview();$('notion-request').onclick=()=>showReview(true);$('close-review').onclick=()=>$('review-dialog').close();
+$('copy-review').onclick=async()=>{try{await navigator.clipboard.writeText($('review-prompt').value);$('review-status').textContent='已复制，打开 ChatGPT 后粘贴';}catch{$('review-prompt').focus();$('review-prompt').select();$('review-status').textContent='已选中全文，请按 Ctrl+C';}};
 function showQuotas() {
   const box=$('quota-items');box.replaceChildren();for(const q of quota.data.items)box.append(node('p',`${q.company} · ${q.cycle} · 最多 ${q.limit} 个岗位`));
   if(!quota.data.items.length)box.append(node('p','还没有记录名额限制','muted'));

@@ -61,6 +61,14 @@ def prepare(db, data, old, record_id, options, conflict_type):
         if other_id != record_id and other.get("company") and aliases.intersection(other.get("dedupe_keys", []) + [identity(other)]):
             raise conflict_type("此岗位已保存（包括垃圾桶），不会再次推荐")
     previous = old["data"] if old else {}
+    work = data.get("screening", {}).get("work")
+    if work != previous.get("screening", {}).get("work"):
+        from .review import validate_assessment
+        validate_assessment(data)
+        if work:
+            profile = db.execute("SELECT version FROM records WHERE collection='profiles' AND id='candidate'").fetchone()
+            if not profile or profile[0] != work["profile_version"]:
+                raise conflict_type("个人档案已变化，请重新读取后判断")
     if data.get("stage") == "applied" and previous.get("stage") != "applied":
         company, cycle = data["company"].strip().casefold(), data.get("cycle", "未指定批次")
         row = db.execute("SELECT data FROM records WHERE collection='profiles' AND id='company-quotas'").fetchone()

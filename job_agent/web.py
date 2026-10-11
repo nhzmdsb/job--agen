@@ -12,7 +12,8 @@ from flask import Flask, jsonify, request, send_file
 from .store import Store, Conflict, private_home
 from .sync import Sync, digest
 
-from .jobs import STAGES, classify, identity
+from .jobs import STAGES, identity
+from .review import project, review_queue, processing_prompt, confirm_proposal
 
 TASKS = {"research": "调查公司", "strategy": "讨论投递策略", "resume": "修改简历", "interview": "准备面试"}
 
@@ -90,13 +91,56 @@ def create_app(store=None, home=None):
         except KeyError:
             return {"version": 0, "data": {"items": []}}
 
+    def candidate():
+        try:
+            return store.get("profiles", "candidate")
+        except KeyError:
+            return None
+
+    def display(record):
+        return project(record, candidate()) if record["collection"] == "jobs" else record
+
+    @app.get("/api/profile")
+    def profile():
+        try:
+            proposal = store.get("profiles", "candidate-proposal")
+        except KeyError:
+            proposal = None
+        return jsonify(record=candidate(), proposal=proposal)
+
+    @app.put("/api/profile")
+    def save_profile():
+        payload = request.get_json()
+        old = candidate()
+        data = dict(old["data"] if old else {})
+        for key, value in payload["patch"].items():
+            data[key] = {**data[key], **value} if isinstance(value, dict) and isinstance(data.get(key), dict) else value
+        result = store.put("profiles", data, "candidate", payload["expected_version"], "workbench", "维护个人档案；未确认事实不得补造")
+        sync.wake()
+        return jsonify(result)
+
+    @app.post("/api/profile/confirm")
+    def accept_profile():
+        payload = request.get_json()
+        result = confirm_proposal(store, payload["expected_version"], payload["proposal_version"])
+        sync.wake()
+        return jsonify(result)
+
+    @app.get("/api/review-queue")
+    def pending_reviews():
+        return jsonify(review_queue(store))
+
+    @app.post("/api/review-prompt")
+    def review_prompt():
+        return jsonify(prompt=processing_prompt(review_queue(store), request.get_json().get("notion", False)))
+
     @app.get("/")
     def index():
         return app.send_static_file("index.html")
 
     @app.get("/api/jobs")
     def jobs():
-        return jsonify(items=[{**r, "data": {**r["data"], "display_color": classify(r["data"])}} for r in all_records("jobs")], quotas=quotas(), artifacts=all_records("artifacts"))
+        return jsonify(items=[display(r) for r in all_records("jobs")], quotas=quotas(), artifacts=all_records("artifacts"), review_count=review_queue(store)["count"])
 
     @app.post("/api/jobs")
     def add_job():
@@ -108,11 +152,11 @@ def create_app(store=None, home=None):
             return jsonify(error="此岗位已保存（包括垃圾桶），不会再次推荐", existing=existing), 409
         result = store.put("jobs", data, record_id="job-" + key, actor="workbench", reason="保存招聘机会")
         sync.wake()
-        return jsonify(result), 201
+        return jsonify(display(result)), 201
 
     @app.get("/api/records/<collection>/<record_id>")
     def get_record(collection, record_id):
-        return jsonify(record=store.get(collection, record_id), history=store.history(collection, record_id))
+        return jsonify(record=display(store.get(collection, record_id)), history=store.history(collection, record_id))
 
     @app.patch("/api/records/<collection>/<record_id>")
     def update(collection, record_id):
@@ -123,7 +167,7 @@ def create_app(store=None, home=None):
         data = {**old["data"], **payload["patch"]}
         record = store.put(collection, data, record_id, payload["expected_version"], "workbench", payload.get("reason", "用户编辑"), quota_confirm=payload.get("quota_confirm", False), quota_reason=payload.get("quota_reason", ""))
         sync.wake()
-        return jsonify(record)
+        return jsonify(display(record))
 
     @app.put("/api/quotas")
     def quota_update():
@@ -172,7 +216,7 @@ def create_app(store=None, home=None):
         ids = list(dict.fromkeys(old["data"].get("artifacts", []) + [artifact_id]))
         result = store.put("jobs", {**old["data"], "artifacts": ids}, record_id, expected, "workbench", "关联简历原文件")
         sync.wake()
-        return jsonify(record=result, artifact=artifact)
+        return jsonify(record=display(result), artifact=artifact)
 
     @app.get("/api/artifacts/<record_id>/download")
     def download(record_id):

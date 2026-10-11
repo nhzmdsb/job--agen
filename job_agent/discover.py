@@ -306,6 +306,7 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                     data["dedupe_keys"] = list(dict.fromkeys([*(data.get("dedupe_keys", [])), identity(link), identity(found)]))
                     screened = screen(data, profile)
                     if not old or old["data"].get("qualification_origin") == "discovery":
+                        screened["screening"] = {**data.get("screening", {}), **screened.get("screening", {})}
                         data.update(screened, qualification_origin="discovery")
                     record_id = old["id"] if old else "job-" + identity(found)
                     job = store.put("jobs", data, record_id, old["version"] if old else 0, "discovery", "官方新链接 → JD → 证据初筛；不自动投递")
