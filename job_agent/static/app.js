@@ -19,18 +19,20 @@ function toast(message) { $('toast').textContent=message; $('toast').hidden=fals
 function node(tag, text, className) { const el=document.createElement(tag); if(text!==undefined) el.textContent=text; if(className) el.className=className; return el; }
 function safeLink(url, label) { const a=node('a',label); if(/^https?:\/\//i.test(url)){a.href=url;a.target='_blank';a.rel='noopener noreferrer';} return a; }
 function dataStage(r) { return r.data.stage || 'pool'; }
+function inView(record, key) { return key==='hidden' ? record.view.low_priority : dataStage(record)===key && (key!=='pool' || !record.view.low_priority); }
 function remember(record) { const i=records.findIndex(r=>r.id===record.id); if(i<0) records.push(record); else records[i]=record; }
 function render() {
   const nav=$('stages'); nav.replaceChildren();
   for (const [key,label] of Object.entries(stages)) {
-    const button=node('button',undefined,key===stage?'active':''); button.append(node('span',label),node('span',records.filter(r=>dataStage(r)===key).length,'count'));
+    const button=node('button',undefined,key===stage?'active':''); button.append(node('span',label),node('span',records.filter(r=>inView(r,key)).length,'count'));
     button.onclick=()=>{stage=key;render();}; nav.append(button);
   }
-  $('stage-title').textContent=stage==='pool'?'看机会':stages[stage];
-  $('stage-description').textContent=stage==='trash'?'已删除机会保留去重记录，不会因重复采集重新出现。':stage==='ended'?'保留申请过程与结果，为之后的选择提供依据。':'先看岗位，再决定如何行动。资料不全的线索也会保留。';
+  $('hidden-count').textContent=records.filter(r=>inView(r,'hidden')).length;
+  $('hidden-opportunities').classList.toggle('active',stage==='hidden');
+  $('stage-title').textContent=stage==='hidden'?'已收起':stage==='pool'?'看机会':stages[stage];
+  $('stage-description').textContent=stage==='hidden'?'这些机会已退出日常浏览。来源和历史仍保留，可在详情中放回机会池。':stage==='trash'?'已删除机会保留去重记录，不会因重复采集重新出现。':stage==='ended'?'保留申请过程与结果，为之后的选择提供依据。':'先看岗位，再决定如何行动。资料不全的线索也会保留。';
   const term=$('search').value.trim().toLowerCase(), filter=$('color-filter').value;
-  $('low-filter').hidden=stage!=='pool'; $('low-count').textContent=records.filter(r=>r.view.low_priority).length;
-  const shown=records.filter(r=>dataStage(r)===stage && (stage!=='pool' || $('show-low').checked || !r.view.low_priority) && (!filter || r.view.color===filter) && (!term || JSON.stringify(r.data).toLowerCase().includes(term))).reverse();
+  const shown=records.filter(r=>inView(r,stage) && (!filter || r.view.color===filter) && (!term || JSON.stringify(r.data).toLowerCase().includes(term))).reverse();
   const cards=$('cards'); cards.replaceChildren();
   for (const record of shown) {
     const d=record.data, view=record.view, color=view.color;
@@ -40,7 +42,7 @@ function render() {
     card.append(top,company,node('div',[d.city || '城市未知',d.education || '学历待核对',d.experience || '经验待核对'].join(' · '),'metadata'));
     const tags=node('div',undefined,'tags'); const values=Array.isArray(d.tags)?d.tags:[];
     for(const tag of values.slice(0,6)) tags.append(node('span',tag,'tag'));
-    card.append(tags,node('p',view.summary || (d.jd ? d.jd.slice(0,170) : '已保留招聘入口，完整 JD 尚未取得。'),'summary'),node('p',`${view.origin}：${view.reason}${view.low_priority?' · 低优先机会':''}`,'judgment'));
+    card.append(tags,node('p',view.summary || (d.jd ? d.jd.slice(0,170) : '已保留招聘入口，完整 JD 尚未取得。'),'summary'),node('p',`${view.origin}：${view.reason}${view.low_priority?' · 已收起':''}`,'judgment'));
     const foot=node('div',undefined,'card-footer'); foot.append(node('span',colors[color]),node('span',d.eligible_years?`可申请毕业年份：${d.eligible_years}`:'毕业年份待确认')); card.append(foot);
     card.onclick=()=>openJob(record); cards.append(card);
   }
@@ -203,7 +205,7 @@ $('copy-prompt').onclick=async()=> {
 async function closeDetail() {if(await flushNotes())$('detail').close();else toast('备注尚未保存，请先处理冲突或恢复连接');}
 $('close-detail').onclick=closeDetail; $('detail').addEventListener('cancel',event=>{event.preventDefault();closeDetail();});
 $('add-button').onclick=()=>openJob(); $('empty-add').onclick=()=>openJob(); $('search').oninput=render; $('color-filter').onchange=render;
-$('show-low').onchange=render;
+$('hidden-opportunities').onclick=()=>{stage='hidden';render();};
 $('edit-facts').onclick=()=>{fillForm(current.data);$('read-pane').hidden=true;form.hidden=false;};
 $('quick-form').onsubmit=async event=>{event.preventDefault();if(!(await flushNotes()))return;const patch={};for(const f of event.target.elements)if(f.name)patch[f.name]=f.value.trim();patch.tags=patch.tags.split(/[,，]/).map(s=>s.trim()).filter(Boolean);try{await patchCurrent(patch);$('quick-status').textContent='已保存';await refresh();await history();}catch(error){$('quick-status').textContent=error.message;}};
 $('restore-pool').onclick=async()=>{if(!(await flushNotes()))return;try{await patchCurrent({pool_visibility:'show'});await history();}catch(error){toast(error.message);}};
