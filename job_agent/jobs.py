@@ -56,8 +56,9 @@ def prepare(db, data, old, record_id, options, conflict_type):
         raise ValueError("未知资格状态")
     records = [(r["id"], json.loads(r["data"])) for r in db.execute("SELECT id,data FROM records WHERE collection='jobs'")]
     key = identity(data)
+    aliases = set(data.get("dedupe_keys", []) + [key])
     for other_id, other in records:
-        if other_id != record_id and other.get("company") and (key == identity(other) or key in other.get("dedupe_keys", [])):
+        if other_id != record_id and other.get("company") and aliases.intersection(other.get("dedupe_keys", []) + [identity(other)]):
             raise conflict_type("此岗位已保存（包括垃圾桶），不会再次推荐")
     previous = old["data"] if old else {}
     if data.get("stage") == "applied" and previous.get("stage") != "applied":
@@ -74,6 +75,6 @@ def prepare(db, data, old, record_id, options, conflict_type):
     if previous.get("stage", "pool") != data.get("stage", "pool"):
         data["application_history"] = previous.get("application_history", []) + [{"stage": data.get("stage", "pool"), "at": datetime.now(timezone.utc).isoformat(), "reason": options.get("reason", "用户更新进度")}]
     data["dedupe_key"] = key
-    data["dedupe_keys"] = list(dict.fromkeys(previous.get("dedupe_keys", []) + ([identity(previous)] if previous else []) + [key]))
+    data["dedupe_keys"] = list(dict.fromkeys(previous.get("dedupe_keys", []) + data.get("dedupe_keys", []) + ([identity(previous)] if previous else []) + [key]))
     data["display_color"] = classify(data)
     return data

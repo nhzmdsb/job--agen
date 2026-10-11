@@ -6,6 +6,12 @@ stage 为 pool/preparing/applied/interview/ended/trash。资格 unknown/eligible
 
 profiles 中 `company-quotas` 的 items 为 company/cycle/limit。企业同批次已申请记录和历史计入名额；超额必须确认并保存 quota_override_reason。垃圾桶保留原始去重标识，不能自动恢复。
 
+`profiles/candidate` 保存 confirmed（已确认事实）、pending（未确认细节）、preferences 和 Notion 来源引用，仅存私有层。Notion 是本轮读取来源，没有双向同步；偏好不是事实，未确认经历不能当成简历内容。jobs.screening 保存 profile_id/version、逐项 checks、questions、职责摘录及人工讨论提示，不给匹配分数。recruitment_year 是发布日期年份；允许毕业年份只能依据 JD 或招聘活动的明确窗口。
+
+目录发现写入 `leads/discovered-*`：保留原链接、稳定来源标识、源响应引用、job_id、detail_checked_at、detail_error、retry_after。已有完整 JD 跳过；失败保留入口，24 小时后可重试。Notion 历史线索以独立 ID 保留原行，未重核验不冒充已取 JD 岗位。jobs.dedupe_keys 合并目录与详情别名，包含垃圾桶记录，不自动恢复。
+
+发现运行 runs 保存真实开始/结束时间、每来源 listed/directory_pages/details_attempted/waiting、new_job_ids、incomplete_jd_ids、errors、trash_skipped。waiting 是本批限额下未尝试的详情，不能记为失败。sources 的 scope 与原始响应记录真实覆盖范围；每次重新枚举目录检查新发布。来源原文件为 source_evidence，不能充当简历。
+
 artifacts 的 data 保存 name/kind/sha256/size 等，二进制位于私有 attachments/{sha256}，jobs.artifacts 关联记录。真实 PDF/DOCX 可上传下载且核验哈希；仅名称/引用的旧附件标记「原文件未恢复」。来源资料与简历明确区分。
 
 SQLite 是私有本地工作副本；私有 GitHub JSON 保存当前记录与完整历史，二进制另存。每次写入事务同时追加历史和待同步；导入验证完整历史后保留原 ID/版本。下面旧约定仍可帮助理解自由字段；其中「只保存附件引用」「共享存储以后再做」已被上述实现取代。

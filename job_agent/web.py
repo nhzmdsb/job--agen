@@ -17,7 +17,7 @@ from .jobs import STAGES, classify, identity
 TASKS = {"research": "调查公司", "strategy": "讨论投递策略", "resume": "修改简历", "interview": "准备面试"}
 
 
-def prompt_for(record, task, description, artifacts, home=None):
+def prompt_for(record, task, description, artifacts, home=None, candidate=None):
     data = record["data"]
     unknown = [label for key, label in (("salary", "薪资"), ("education", "学历"), ("experience", "经验"), ("recruitment_year", "招聘活动年份"), ("target_cohort", "目标毕业届别"), ("eligible_years", "允许申请的毕业年份"), ("jd", "完整 JD")) if not data.get(key)]
     attachments = [{"name": a["data"].get("name"), "sha256": a["data"].get("sha256"), "original_available": bool(home and (Path(home) / "attachments" / a["data"].get("sha256", "missing")).is_file())} for a in artifacts]
@@ -29,6 +29,8 @@ def prompt_for(record, task, description, artifacts, home=None):
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 尚未明确：{'、'.join(unknown) or '请继续核对资料时效与资格证据'}。
+个人档案（仅明确事实可作为经历；待确认内容不得写成简历事实）：
+{json.dumps(candidate['data'], ensure_ascii=False, indent=2) if candidate else '未取得个人档案，请向我核实。'}
 我的补充要求：{description or '请先给出可执行建议，关键选择由我确认。'}
 已关联附件：{json.dumps(attachments, ensure_ascii=False)}
 注意：此 Prompt 不包含附件原文件。需要阅读简历时，请提示我在此会话另行上传，不能声称已经读过。
@@ -193,7 +195,11 @@ def create_app(store=None, home=None):
             raise ValueError("请选择准备任务")
         record = store.get("jobs", record_id)
         artifacts = [r for r in all_records("artifacts") if r["id"] in record["data"].get("artifacts", [])]
-        text = prompt_for(record, task, payload.get("description", ""), artifacts, home)
+        try:
+            candidate = store.get("profiles", "candidate")
+        except KeyError:
+            candidate = None
+        text = prompt_for(record, task, payload.get("description", ""), artifacts, home, candidate)
         missing = [a["data"].get("name", a["id"]) for a in artifacts if not (home / "attachments" / a["data"].get("sha256", "missing")).is_file()]
         if missing:
             text += "\n附件原文件未恢复或尚未同步：" + "、".join(missing)
