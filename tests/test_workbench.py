@@ -74,7 +74,7 @@ class WorkbenchTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT version FROM outbox").fetchone()[0], 2)
 
     def test_colors_trash_previous_url_and_quota_ended(self):
-        self.assertEqual([classify(x) for x in ({}, {"jd": "x", "qualification": "disadvantage"}, {"jd": "x", "qualification": "eligible"}, {"jd": "x", "qualification": "eligible", "interest": "yes"})], ["grey", "yellow", "beige", "green"])
+        self.assertEqual([classify(x) for x in ({}, {"jd": "x", "qualification": "disadvantage"}, {"jd": "x", "qualification": "eligible"}, {"jd": "x", "qualification": "eligible", "interest": "yes"})], ["grey", "yellow", "green", "green"])
         a = self.job(stage="trash")
         changed = self.store.put("jobs", {**a["data"], "url": "https://example.invalid/new"}, "a", 1)
         with self.assertRaises(Conflict):

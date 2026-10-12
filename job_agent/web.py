@@ -83,7 +83,7 @@ def create_app(store=None, home=None):
         return jsonify(error="文件不得超过 8 MB"), 413
 
     def all_records(collection):
-        return [r for r in store.export()["records"] if r["collection"] == collection]
+        return store.records(collection)
 
     def quotas():
         try:
@@ -98,7 +98,7 @@ def create_app(store=None, home=None):
             return None
 
     def display(record):
-        return project(record, candidate()) if record["collection"] == "jobs" else record
+        return project(record, candidate(), store) if record["collection"] == "jobs" else record
 
     @app.get("/api/profile")
     def profile():
@@ -128,11 +128,42 @@ def create_app(store=None, home=None):
 
     @app.get("/api/review-queue")
     def pending_reviews():
-        return jsonify(review_queue(store))
+        return jsonify(review_queue(store, int(request.args.get("limit", 50)), int(request.args.get("offset", 0))))
+
+    @app.get("/api/worker/context")
+    def worker_context():
+        from .worker import context
+        return jsonify(context(store, int(request.args.get("limit", 50)), int(request.args.get("offset", 0))))
+
+    @app.post("/api/worker/lookup")
+    def worker_lookup():
+        from .worker import lookup
+        return jsonify(lookup(store, request.get_json()["identities"]))
+
+    @app.post("/api/worker/records/<collection>")
+    @app.patch("/api/worker/records/<collection>/<record_id>")
+    def worker_write(collection, record_id=None):
+        from .worker import write
+        payload = request.get_json()
+        result = write(store, collection, payload["patch" if request.method == "PATCH" else "data"], record_id or payload.get("id"), payload["expected_version"], patch=request.method == "PATCH", reason=payload.get("reason", ""), human_confirm=payload.get("human_confirm", False), confirmation_reason=payload.get("confirmation_reason", ""), quota_confirm=payload.get("quota_confirm", False), quota_reason=payload.get("quota_reason", ""))
+        if result["action"] != "unchanged":
+            sync.wake()
+        return jsonify(result)
+
+    @app.post("/api/worker/merge")
+    def worker_merge():
+        from .worker import merge_jobs
+        result = merge_jobs(store, **request.get_json())
+        sync.wake()
+        return jsonify(result)
 
     @app.post("/api/review-prompt")
     def review_prompt():
-        return jsonify(prompt=processing_prompt(review_queue(store), request.get_json().get("notion", False)))
+        queue = review_queue(store)
+        notion = request.get_json().get("notion", False)
+        if notion and queue["profile"]:
+            queue["profile"]["data"]["sources"] = store.get("profiles", "candidate")["data"].get("sources", [])
+        return jsonify(prompt=processing_prompt(queue, notion))
 
     @app.get("/")
     def index():
@@ -150,7 +181,7 @@ def create_app(store=None, home=None):
         existing = next((r for r in all_records("jobs") if identity(r["data"]) == key), None)
         if existing:
             return jsonify(error="此岗位已保存（包括垃圾桶），不会再次推荐", existing=existing), 409
-        result = store.put("jobs", data, record_id="job-" + key, actor="workbench", reason="保存招聘机会")
+        result = store.put("jobs", data, record_id="job-" + key, actor="workbench", reason="保存招聘机会", _human=True)
         sync.wake()
         return jsonify(display(result)), 201
 
@@ -164,8 +195,7 @@ def create_app(store=None, home=None):
         old = store.get(collection, record_id)
         if old["version"] != payload["expected_version"]:
             return jsonify(error="记录已被另一处修改，您的编辑仍保留，请选择合并", current=old), 409
-        data = {**old["data"], **payload["patch"]}
-        record = store.put(collection, data, record_id, payload["expected_version"], "workbench", payload.get("reason", "用户编辑"), quota_confirm=payload.get("quota_confirm", False), quota_reason=payload.get("quota_reason", ""))
+        record = store.patch(collection, record_id, payload["patch"], payload["expected_version"], actor="workbench", reason=payload.get("reason", "用户编辑"), quota_confirm=payload.get("quota_confirm", False), quota_reason=payload.get("quota_reason", ""), human_confirm=payload.get("human_confirm", False), confirmation_reason=payload.get("confirmation_reason", ""), _human=True)
         sync.wake()
         return jsonify(display(record))
 
@@ -294,7 +324,7 @@ def create_app(store=None, home=None):
             if version != payload["expected_version"]:
                 raise Conflict("本地又有修改，请重新选择")
             store.insert_pack(db, pack)
-            result = store.put(collection, payload["data"], record_id, pack["record"]["version"], "workbench", "用户合并同步冲突；双方完整历史：" + archive_path, _db=db)
+            result = store.put(collection, payload["data"], record_id, pack["record"]["version"], "workbench", "用户合并同步冲突；双方完整历史：" + archive_path, _db=db, _human=True, human_confirm=payload.get("human_confirm", False), confirmation_reason=payload.get("confirmation_reason", ""))
             db.execute("INSERT OR REPLACE INTO sync_base VALUES (?,?,?,?)", (collection, record_id, digest(pack), inventory[path]))
             db.execute("DELETE FROM conflicts WHERE collection=? AND id=?", (collection, record_id))
         sync.wake()

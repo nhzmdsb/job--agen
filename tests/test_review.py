@@ -59,7 +59,7 @@ class ReviewTests(unittest.TestCase):
 
     def test_staleness_notes_manual_interest_and_translation(self):
         self.save(self.work("eligible"))
-        self.assertEqual(project(self.job, self.profile)["view"]["color"], "beige")
+        self.assertEqual(project(self.job, self.profile)["view"]["color"], "green")
         self.assertTrue(self.save({**self.job["data"], "notes": "changed"})["view"]["fresh"])
         self.assertEqual(self.save({**self.job["data"], "interest": "yes"})["view"]["color"], "green")
         translated = {**self.job["data"], "translation": {"source_hash": content_hash(self.job["data"]), "title_zh": "虚构测试岗位", "summary_zh": "虚构测试摘要", "jd_zh": "2026 届毕业生。相关专业优先。接受实习经历。要求一年正式工作。"}}
@@ -67,7 +67,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(self.job["data"]["jd"], self.store.history("jobs", "fixture")[0]["data"]["jd"])
         stale = self.save({**self.job["data"], "jd": self.job["data"]["jd"] + " Changed requirement."})
         self.assertTrue(stale["view"]["stale"])
-        self.assertEqual(stale["view"]["color"], "grey")
+        self.assertEqual(stale["view"]["color"], "green")
         self.assertFalse(stale["view"]["translation_valid"])
         self.assertFalse(stale["view"]["low_priority"])
         manual = self.save({**self.job["data"], "color": "yellow", "color_reason": "User decision"})

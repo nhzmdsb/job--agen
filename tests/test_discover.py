@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from job_agent.discover import LDC, discover, screen
@@ -82,6 +83,81 @@ class DiscoveryTests(unittest.TestCase):
         data = {"jd": "本科；专业不限；应届毕业生及职场新人", "graduation_windows": {"domestic": {"start": "2027-01-01", "end": "2027-06-30", "quote": "2027 graduates"}}}
         self.assertEqual(screen(data, self.profile)["qualification"], "disadvantage")
         self.assertEqual(screen({"jd": "Bachelor required; 2 years of work experience"}, self.profile)["qualification"], "disadvantage")
+
+    def test_completed_second_run_reuses_results_and_scans_reordered_list(self):
+        from test_worker import assessment
+        from job_agent.review import translation_hash
+        discover(self.store, self.home, 2, ("ldc",), self.remote([]))
+        for record in self.store.records("jobs"):
+            self.store.patch("jobs", record["id"], {
+                "screening": {"work": assessment(record["data"], self.profile)},
+                "translation": {"source_hash": translation_hash(record["data"]),
+                                "title_zh": "虚构岗位", "summary_zh": "虚构摘要", "jd_zh": record["data"]["jd"]}}, record["version"])
+        before = {r["id"]: self.store.pack("jobs", r["id"]) for r in self.store.records("jobs")}
+        calls = []
+        second = discover(self.store, self.home, 2, ("ldc",), self.remote(calls))
+        self.assertEqual(second["details_attempted"], 0)
+        self.assertEqual(second["remaining"], [])
+        self.assertEqual(second["status"], "completed")
+        for key, pack in before.items():
+            self.assertEqual(self.store.pack("jobs", key), pack)
+        remote = self.remote(calls)
+        def reordered(url, payload=None):
+            if "?" in url and "offset=0" in url:
+                return json.dumps({"totalFound": 3, "content": [
+                    {"id": str(n), "name": "Fictional sales trainee", "location": {"country": "cn"}} for n in (2, 3, 1)]}).encode()
+            return remote(url, payload)
+        third = discover(self.store, self.home, 2, ("ldc",), reordered)
+        self.assertEqual(third["details_read"], 1)
+        self.assertEqual(len(self.store.records("jobs")), 3)
+        for key, pack in before.items():
+            self.assertEqual(self.store.pack("jobs", key), pack)
+
+    def test_refresh_failure_preserves_results_and_explicit_retry(self):
+        discover(self.store, self.home, 2, ("ldc",), self.remote([]))
+        before = self.store.records("jobs")
+        succeeded = {r["id"]: r["data"]["detail_succeeded_at"] for r in self.store.records("leads")}
+        failed = discover(self.store, self.home, 2, ("ldc",), self.remote([], True), refresh=True)
+        self.assertEqual(failed["failed"], 2)
+        self.assertEqual(self.store.records("jobs"), before)
+        for lead in self.store.records("leads"):
+            self.assertEqual(lead["data"]["detail_succeeded_at"], succeeded[lead["id"]])
+            self.assertTrue(lead["data"]["detail_attempted_at"])
+            self.assertTrue(lead["data"]["retry_after"])
+        backed_off = discover(self.store, self.home, 2, ("ldc",), self.remote([], True), refresh=True)
+        self.assertEqual(backed_off["details_attempted"], 0)
+        retried = discover(self.store, self.home, 2, ("ldc",), self.remote([]), refresh=True, retry=True)
+        self.assertEqual(retried["details_read"], 2)
+        self.assertTrue(all(not r["data"]["detail_error"] for r in self.store.records("leads")))
+
+    def test_interruption_leaves_resumable_run(self):
+        remote = self.remote([])
+        def interrupted(url, payload=None):
+            if url == LDC + "/2":
+                raise KeyboardInterrupt()
+            return remote(url, payload)
+        with self.assertRaises(KeyboardInterrupt):
+            discover(self.store, self.home, 2, ("ldc",), interrupted)
+        run = self.store.records("runs")[0]["data"]
+        self.assertEqual(run["status"], "running")
+        self.assertEqual(run["details_read"], 1)
+        self.assertTrue(any("assessment" in r["tasks"] for r in run["remaining"]))
+        self.assertTrue(any(r.get("lead_id") for r in run["remaining"]))
+        calls = []
+        resumed = discover(self.store, self.home, 2, ("ldc",), self.remote(calls))
+        self.assertEqual(resumed["details_read"], 1)
+        self.assertNotIn(LDC + "/1", calls)
+        self.assertIn(LDC + "/2", calls)
+
+    def test_empty_refresh_is_failure_and_keeps_cached_jd(self):
+        discover(self.store, self.home, 2, ("ldc",), self.remote([]))
+        before = self.store.records("jobs")
+        with patch('job_agent.discover.detail', return_value={'company': 'Fictional', 'title': 'Empty', 'jd': ''}):
+            result = discover(self.store, self.home, 2, ("ldc",), self.remote([]), refresh=True)
+        self.assertEqual(result['failed'], 2)
+        self.assertEqual(result['details_read'], 0)
+        self.assertEqual(self.store.records('jobs'), before)
+        self.assertTrue(all('完整 JD' in lead['data']['detail_error'] for lead in self.store.records('leads')))
 
 
 if __name__ == "__main__":
