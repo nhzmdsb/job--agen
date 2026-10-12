@@ -1,4 +1,4 @@
-# 当前工作台数据约定（2026-10-11）
+# 当前工作台数据约定（2026-10-12）
 
 保留外层 collection/id/version/created_at/updated_at 和自由 data；未知字段必须保留。jobs 工作台字段：company/title、jd/url/boss_url、salary/city/education/experience/tags、recruitment_year/target_cohort/eligible_years、qualification/qualification_evidence、interest/color/color_reason、cycle/notes、artifacts、application_history/outcome、dedupe_keys。年份字段不互相推断；未知资格不排除。
 
@@ -25,7 +25,7 @@ job_hash 为 company/title/jd/url/boss_url/salary/city/education/experience/recr
 
 `pool_visibility=show` 代表人工恢复展示，auto 恢复默认折叠规则。只对 pool 的有效强制不符结论折叠，不改 stage。人工 color/color_reason 保留；interest=yes 才可绿色，缺 JD 总为灰色。失效 Work 结论不能自动折叠或着色。
 
-`translation` 保存 title_zh/summary_zh/source_hash/generated_at，source_hash 等于岗位事实哈希；仅附加展示，原始 title/jd 不改。原文变化后中文内容不再作为有效展示。
+`translation` 保存 title_zh/summary_zh/jd_zh/source_hash/generated_at，source_hash 等于岗位事实哈希。jd_zh 是覆盖职责、资格、福利等原文各节的完整中文 JD，不是摘要；英文及中英混合岗位均可翻译。只有标题摘要的旧记录仍可展示，但进入待补全文清单。仅附加展示，原始 title/jd 不改；原文变化后中文内容不再作为有效展示。
 
 `source_problems` 为问题列表，各项 id/description/status/reported_at；pending 进入核验队列。没有取得新证据时保留原文和 pending，不写成已刷新。`profiles/candidate-proposal` 保存 base_version/patch/sources/reason/status；档案及建议双版本检查后原子确认，保留未修改子字段。
 

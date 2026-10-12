@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const stages = {pool:'机会池',preparing:'准备投递',applied:'已投递',interview:'面试中',ended:'已结束',trash:'垃圾桶'};
+const stages = {pool:'机会池',preparing:'准备投递',applied:'已投递',interview:'面试中',ended:'已结束',trash:'回收站'};
 const colors = {green:'符合且有吸引力',yellow:'有不利条件',beige:'兴趣待确认',grey:'资料待确认'};
 let records = [], artifacts = [], quota = {version:0,data:{items:[]}}, stage = 'pool', current = null;
 let saving = Promise.resolve(), noteTimer, dirtyNotes = false, noteConflict = null, syncConflict = null, resolvedData = {}, lastChecked;
@@ -59,6 +59,7 @@ function fillForm(data) {
 }
 function fillSide() {
   $('stage-select').value=current?dataStage(current):'pool';
+  $('trash-job').textContent=current && dataStage(current)==='trash'?'从回收站恢复到机会池':'移入回收站';
   $('detail-company').textContent=current?.data.company || '保留线索，稍后补全';
   $('detail-title').textContent=current?.view.title || '保存机会';
   const links=$('source-links'); links.replaceChildren();
@@ -75,7 +76,7 @@ function fillSide() {
     else box.append(node('p',`${a.data.name || id} · 原文件未恢复`));
   }
   if(!ids.length)box.append(node('p','尚未关联真实简历','muted'));
-  for(const id of ['stage-select','notes','upload','generate-prompt'])$(id).disabled=!current;
+  for(const id of ['stage-select','trash-job','trash-reason','notes','upload','generate-prompt'])$(id).disabled=!current;
   if(current)fillReading();
 }
 const dimensionLabels={graduation:'毕业资格',education:'学历',major:'专业',experience:'经验',responsibilities:'职责关联',preferences:'求职偏好'};
@@ -84,22 +85,27 @@ function fillReading() {
   const d=current.data,v=current.view,work=d.screening?.work;
   $('read-facts').textContent=[d.city||'地点待确认',d.salary||'薪资待确认',d.education||'学历待确认',d.experience||'经验待确认',`招聘年份：${d.recruitment_year||'未知'}`,`面向届别：${d.target_cohort||'未知'}`,`允许毕业年份：${d.eligible_years||'未知'}`].join(' · ');
   $('read-summary').textContent=v.summary||'尚无中文摘要';
-  $('translation-status').textContent=v.translation_valid?'中文标题与摘要由 Work 整理，原文保留在下方。':v.translation_pending?'中文标题与摘要待 Work 更新，当前保留原文。':'';
+  $('translation-status').textContent=v.translation_valid?'完整中文 JD 由 Work 翻译，可展开查看原文。':v.translation_pending?'完整中文 JD 待 Work 补全，当前显示原文；已有标题和摘要不代表完成翻译。':'';
   $('read-reason').textContent=`${v.origin} · ${colors[v.color]}：${v.reason}`;
   const evidence=$('read-evidence');evidence.replaceChildren();
   if(work) {
     if(v.stale)evidence.append(node('p','以下是失效的旧判断，仅供参考，不用于自动折叠或着色。','warning'));
     for(const c of work.checks||[]) {
-      const box=node('section',undefined,'evidence-item');box.append(node('strong',`${dimensionLabels[c.dimension]} · ${kindLabels[c.kind]} · ${{pass:'符合',fail:'不符',unknown:'待确认'}[c.status]}`),node('p',c.reason),node('p',`JD 依据：${c.jd_quote||'原文未明确'}`),node('p',`档案事实：${c.profile_fact}`));if(c.evidence_url)box.append(safeLink(c.evidence_url,'资格原始来源'));evidence.append(box);
+      const box=node('article',undefined,'evidence-card');
+      box.append(node('strong',dimensionLabels[c.dimension]),node('span',`${kindLabels[c.kind]} · ${{pass:'符合',fail:'不符',unknown:'待确认'}[c.status]}`,'evidence-status'),node('p',c.reason));
+      const details=node('details');details.append(node('summary','查看原文与档案依据'),node('p',`JD 原文：${c.jd_quote||'原文未明确'}`),node('p',`档案事实：${c.profile_fact}`));if(c.evidence_url)details.append(safeLink(c.evidence_url,'资格原始来源'));box.append(details);evidence.append(box);
     }
-    for(const q of work.questions||[])evidence.append(node('p',`待确认：${q}`));
+    for(const q of work.questions||[]){const box=node('article',undefined,'evidence-card question-card');box.append(node('strong','待确认'),node('p',q));evidence.append(box);}
     evidence.append(node('small',`档案 v${work.profile_version} · 判断时间 ${work.assessed_at}`));
   }
-  if(d.screening)evidence.append(node('p',`程序辅助检查（不能代替 Work 判断）：${JSON.stringify(Object.fromEntries(Object.entries(d.screening).filter(([k])=>k!=='work')))}`,'muted'));
+  if(d.screening){const details=node('details',undefined,'auxiliary-checks');details.append(node('summary','程序辅助检查（供核对）'),node('p',JSON.stringify(Object.fromEntries(Object.entries(d.screening).filter(([k])=>k!=='work')))));evidence.append(details);}
   if(d.color_reason)evidence.append(node('p',`人工调整：${d.color_reason}`));
   $('restore-pool').hidden=!v.low_priority;
   $('fold-pool').hidden=!(dataStage(current)==='pool' && d.pool_visibility==='show' && v.fresh && work?.decision==='ineligible');
-  $('original-title').textContent=`原始岗位名称：${d.title}`; $('read-jd').textContent=d.jd||'完整 JD 尚未取得，已保留原始入口。';
+  $('jd-heading').textContent=v.translation_valid?'完整中文 JD':'完整 JD';
+  $('read-jd').textContent=v.jd||'完整 JD 尚未取得，已保留原始入口。';
+  $('original-jd-panel').hidden=!v.translation_valid;
+  $('original-title').textContent=`原始岗位名称：${d.title}`; $('original-jd').textContent=d.jd||'';
   $('read-source-evidence').textContent=typeof d.qualification_evidence==='string'?d.qualification_evidence:JSON.stringify(d.qualification_evidence||'');
   const problems=$('source-problems');problems.replaceChildren();for(const p of d.source_problems||[])problems.append(node('p',`${p.status==='resolved'?'已核验':'待核验'}：${p.description}`));
 }
@@ -113,6 +119,7 @@ async function history() {
 async function openJob(record=null) {
   if($('detail').open && !(await flushNotes()))return;
   current=record ? await api(`/api/records/jobs/${encodeURIComponent(record.id)}`).then(r=>r.record) : null;
+  $('trash-reason').value=current?.data.rejection_reason||'';
   fillForm(current?.data || {}); $('notes').value=current?.data.notes||''; dirtyNotes=false; noteConflict=null;
   $('note-conflict').hidden=true; $('note-status').textContent='编辑后自动保存';
   for(const id of ['form-status','upload-status','prompt-status','prompt','description']) { if('value' in $(id))$(id).value=''; else $(id).textContent=''; }
@@ -160,9 +167,9 @@ form.onsubmit=async event=> {
     $('form-status').textContent='岗位资料已保存'; await refresh(); fillSide();readingMode();fillQuick(); await history();
   } catch(error) { $('form-status').textContent=error.message; if(error.result?.current) {toast('岗位资料已更新，请关闭并重新打开；您填写的内容仍保留在表单。');} }
 };
-$('stage-select').onchange=async()=> {
-  const requested=$('stage-select').value; if(!(await flushNotes())){$('stage-select').value=dataStage(current);return;}
-  try {await patchCurrent({stage:requested});toast(`已移至${stages[requested]}`); await history();}
+async function changeStage(requested, patch={}) {
+  if(!(await flushNotes())){$('stage-select').value=dataStage(current);return;}
+  try {await patchCurrent({...patch,stage:requested},{reason:requested==='trash'?'用户移入回收站':'用户修改求职进度'});toast(`已移至${stages[requested]}`); await history();}
   catch(error) {
     if(error.message.startsWith('quota:')) {
       quotaRequest={id:current.id,stage:requested};
@@ -172,7 +179,9 @@ $('stage-select').onchange=async()=> {
     }else toast(error.message);
     $('stage-select').value=dataStage(current);
   }
-};
+}
+$('stage-select').onchange=()=>changeStage($('stage-select').value);
+$('trash-job').onclick=()=>changeStage(dataStage(current)==='trash'?'pool':'trash',dataStage(current)==='trash'?{}:{rejection_reason:$('trash-reason').value.trim(),interest:'no'});
 $('cancel-quota-confirm').onclick=()=>$('quota-confirm-dialog').close();
 $('quota-confirm-form').onsubmit=async event=> {
   event.preventDefault(); const reason=$('quota-reason').value.trim();

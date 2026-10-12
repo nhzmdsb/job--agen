@@ -62,8 +62,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(project(self.job, self.profile)["view"]["color"], "beige")
         self.assertTrue(self.save({**self.job["data"], "notes": "changed"})["view"]["fresh"])
         self.assertEqual(self.save({**self.job["data"], "interest": "yes"})["view"]["color"], "green")
-        translated = {**self.job["data"], "translation": {"source_hash": content_hash(self.job["data"]), "title_zh": "虚构测试岗位", "summary_zh": "虚构测试摘要"}}
+        translated = {**self.job["data"], "translation": {"source_hash": content_hash(self.job["data"]), "title_zh": "虚构测试岗位", "summary_zh": "虚构测试摘要", "jd_zh": "2026 届毕业生。相关专业优先。接受实习经历。要求一年正式工作。"}}
         self.assertTrue(self.save(translated)["view"]["translation_valid"])
+        self.assertEqual(self.job["data"]["jd"], self.store.history("jobs", "fixture")[0]["data"]["jd"])
         stale = self.save({**self.job["data"], "jd": self.job["data"]["jd"] + " Changed requirement."})
         self.assertTrue(stale["view"]["stale"])
         self.assertEqual(stale["view"]["color"], "grey")
@@ -74,6 +75,22 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(manual["data"]["extra"], {"keep": True})
         self.profile = self.store.put("profiles", self.profile["data"], "candidate", 1)
         self.assertTrue(project(self.job, self.profile)["view"]["stale"])
+
+    def test_partial_translation_and_mixed_language_jd_remain_pending(self):
+        data = {**self.job["data"], "title": "虚构测试岗位", "jd": "中文介绍。 Previous experience in supply chain operations required."}
+        data["translation"] = {"source_hash": content_hash(data), "title_zh": "虚构测试岗位", "summary_zh": "旧摘要"}
+        view = self.save(data)["view"]
+        self.assertFalse(view["translation_valid"])
+        self.assertTrue(view["translation_pending"])
+        self.assertEqual(view["jd"], data["jd"])
+        self.assertIn("translation", review_queue(self.store)["items"][0]["tasks"])
+        data["translation"]["jd_zh"] = "中文介绍。要求此前具有供应链运营经验。"
+        view = self.save(data)["view"]
+        self.assertTrue(view["translation_valid"])
+        self.assertFalse(view["translation_pending"])
+        self.assertEqual(view["jd"], data["translation"]["jd_zh"])
+        view = self.save({**self.job["data"], "notes": "用户备注"})["view"]
+        self.assertTrue(view["translation_valid"])
 
     def test_queue_read_only_trash_and_cas(self):
         before = self.store.export()
