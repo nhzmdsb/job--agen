@@ -159,6 +159,35 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.store.records('jobs'), before)
         self.assertTrue(all('完整 JD' in lead['data']['detail_error'] for lead in self.store.records('leads')))
 
+    def test_skipped_lead_stays_skipped_until_explicit_reopen(self):
+        lead_id = 'discovered-' + identity({'url': LDC + '/1'})
+        self.store.put('leads', {'detail_url': LDC + '/1', 'status': 'skipped',
+                                'skip_reason': 'Fixture: stop investing in this entrance'}, lead_id)
+        calls = []
+        first = discover(self.store, self.home, 2, ('ldc',), self.remote(calls))
+        self.assertNotIn(LDC + '/1', calls)
+        self.assertIn(LDC + '/2', calls)
+        self.assertEqual(first['scope']['ldc']['waiting'], 0)
+        self.assertFalse(any(r.get('lead_id') == lead_id for r in first['remaining']))
+        calls.clear()
+        second = discover(self.store, self.home, 2, ('ldc',), self.remote(calls), refresh=True, retry=True)
+        self.assertNotIn(LDC + '/1', calls)
+        self.assertFalse(any(r.get('lead_id') == lead_id for r in second['remaining']))
+        self.assertTrue(any('assessment' in r['tasks'] for r in second['remaining']))
+        lead = self.store.get('leads', lead_id)
+        self.assertEqual(lead['data']['status'], 'skipped')
+        self.assertEqual(lead['data']['skip_reason'], 'Fixture: stop investing in this entrance')
+        response = create_app(self.store, self.home).test_client().patch('/api/worker/records/leads/' + lead_id,
+            json={'expected_version': lead['version'], 'patch': {'status': 'pending'}, 'reason': 'Fixture: a concrete new clue'},
+            headers={'X-Workspace': '1'})
+        self.assertEqual(response.status_code, 200, response.json)
+        calls.clear()
+        reopened = discover(self.store, self.home, 2, ('ldc',), self.remote(calls))
+        self.assertIn(LDC + '/1', calls)
+        self.assertNotIn(LDC + '/2', calls)
+        self.assertEqual(reopened['details_read'], 1)
+        self.assertEqual(len(self.store.records('jobs')), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

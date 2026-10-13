@@ -1,6 +1,6 @@
 # 当前工作台数据约定（2026-10-13）
 
-保留外层 collection/id/version/created_at/updated_at 和自由 data；未知字段必须保留。jobs 工作台字段：company/title、jd/url/boss_url、salary/city/education/experience/tags、recruitment_year/target_cohort/eligible_years、qualification/qualification_evidence、interest/color/color_reason、cycle/notes、artifacts、application_history/outcome、dedupe_keys。年份字段不互相推断；未知资格不排除。
+保留外层 collection/id/version/created_at/updated_at 和自由 data；未知字段必须保留。jobs 工作台字段：company/title、jd/url/detail_url/boss_url、salary/city/education/experience/tags、recruitment_year/target_cohort/eligible_years、qualification/qualification_evidence、interest/color/color_reason、cycle/notes、artifacts、application_history/outcome、dedupe_keys。年份字段不互相推断；未知资格不排除。detail_url 是具体岗位详情，页面优先展示；身份保留有意义的 `#` 路由及 JobID，仅清除已确认跟踪参数。历史去重键因丢失片段而变成共用目录地址时，读取按保存的完整链接重新计算身份，不重写旧记录。
 
 stage 为 pool/preparing/applied/interview/ended/trash。资格 unknown/eligible/disadvantage 与兴趣分别记录。绿色表示符合已确认条件且值得考虑，不依赖兴趣；黄色表示明确不利因素；灰色只表示已读 JD 后仍有重要歧义。未读、读取失败或仅存事实尚未判断进入内部待办。旧米色保留并进入重核，不自动升级。本人颜色需原因。
 
@@ -9,6 +9,8 @@ profiles 中 `company-quotas` 的 items 为 company/cycle/limit。企业同批�
 `profiles/candidate` 保存 confirmed（已确认事实）、pending（未确认细节）、preferences 和 Notion 来源引用，仅存私有层。Notion 是本轮读取来源，没有双向同步；偏好不是事实，未确认经历不能当成简历内容。jobs.screening 保留程序辅助线索；语义结论保存为 screening.work（见下文），不给匹配分数。recruitment_year 是发布日期年份；允许毕业年份只能依据 JD 或招聘活动的明确窗口。
 
 目录发现写入 `leads/discovered-*`：保留原链接、稳定来源标识、源响应引用、job_id、detail_checked_at、detail_error、retry_after。已有完整 JD 跳过；失败保留入口，24 小时后可重试。Notion 历史线索以独立 ID 保留原行，未重核验不冒充已取 JD 岗位。jobs.dedupe_keys 合并目录与详情别名，包含垃圾桶记录，不自动恢复。
+
+主动略过的 lead 保存 status=skipped、skip_reason、skipped_at、reopen_when；不会自动进入详情待办，目录再次出现和刷新/重试开关也不会重开。获得具体新线索、能力修复或本人要求后，说明依据并按预期版本明确改回 pending。略过入口不取消已有岗位独立的判断任务，不能用批量略过掩盖未处理范围。
 
 发现运行 runs 保存真实开始/结束时间、每来源 listed/directory_pages/details_attempted/waiting、new_job_ids、incomplete_jd_ids、errors、trash_skipped。waiting 是本批限额下未尝试的详情，不能记为失败。sources 的 scope 与原始响应记录真实覆盖范围；每次重新枚举目录检查新发布。来源原文件为 source_evidence，不能充当简历。
 

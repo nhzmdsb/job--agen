@@ -32,18 +32,25 @@ def classify(data):
     return "green"
 
 
+def normalized_query(query):
+    # Only established tracking parameters; requisition IDs and unknown keys survive.
+    return urlencode(sorted((k, v) for k, v in parse_qsl(query, keep_blank_values=True) if not k.lower().startswith("utm_") and k.lower() not in ("gclid", "fbclid", "msclkid")))
+
+
 def normalized_url(url):
     parts = urlsplit(url.strip())
-    # Only established tracking parameters; requisition IDs and unknown keys survive.
-    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if not k.lower().startswith("utm_") and k.lower() not in ("gclid", "fbclid", "msclkid")]
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), urlencode(sorted(query)), ""))
+    fragment = parts.fragment
+    if "?" in fragment:
+        route, query = fragment.split("?", 1)
+        fragment = route + "?" + normalized_query(query)
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), normalized_query(parts.query), fragment))
 
 
 def identity(data):
-    for key in ("company", "title", "url"):
+    for key in ("company", "title", "url", "detail_url"):
         if data.get(key) is not None and not isinstance(data[key], str):
             raise ValueError("公司、岗位与来源链接必须是文字")
-    url = normalized_url(data.get("url") or "")
+    url = normalized_url(data.get("url") or data.get("detail_url") or "")
     # Prefer source requisition ID, then URL; title changes do not create a new job.
     source = data.get("source") or data.get("discovery_source")
     key = ["source", source, str(data["source_job_id"])] if source and data.get("source_job_id") else ["url", url] if url else ["job", data.get("company", "").strip().casefold(), data.get("title", "").strip().casefold(), data.get("source_job_id", "")]
@@ -51,15 +58,21 @@ def identity(data):
 
 
 def identity_keys(data):
-    keys = set(data.get("dedupe_keys", []))
+    keys, obsolete = set(), set()
     for entry in [data, *data.get("identity_aliases", [])]:
         if not isinstance(entry, dict):
             raise ValueError("identity_aliases must contain objects")
         if (entry.get("source") or entry.get("discovery_source")) and entry.get("source_job_id"):
             keys.add(identity(entry))
-        for field in ("url", "boss_url"):
+        for field in ("url", "detail_url", "boss_url"):
             if entry.get(field):
                 keys.add(identity({"url": entry[field]}))
+                parts = urlsplit(entry[field])
+                if parts.fragment:
+                    # Old code erased fragments. Ignore that lossy key on read,
+                    # unless the base URL is also an explicitly saved alias.
+                    obsolete.add(identity({"url": urlunsplit(parts._replace(fragment=""))}))
+    keys |= set(data.get("dedupe_keys", [])) - obsolete
     if not keys and data.get("company"):
         keys.add(identity(data))
     return keys
@@ -71,7 +84,7 @@ def prepare(db, data, old, record_id, options, conflict_type):
         raise ValueError("请填写公司与岗位名称，招聘入口也可以作为线索保存")
     if data.get("stage", "pool") not in STAGES:
         raise ValueError("未知进度")
-    for key in ("url", "boss_url"):
+    for key in ("url", "detail_url", "boss_url"):
         if data.get(key) and (not isinstance(data[key], str) or urlsplit(data[key]).scheme not in ("http", "https")):
             raise ValueError("来源链接必须以 http:// 或 https:// 开头")
     if data.get("qualification", "unknown") not in ("unknown", "eligible", "disadvantage"):

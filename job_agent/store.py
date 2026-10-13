@@ -145,6 +145,9 @@ class Store:
                     data["judgment_authorship"] = authors
                 if not _human and previous.get("stage") == "trash" and data.get("stage") != "trash":
                     raise Conflict("Agent 不得恢复回收站岗位")
+                if old and data == previous:
+                    # Reading or resubmitting a legacy record must not migrate its keys.
+                    return self.decode(old)
             if collection == "profiles" and record_id == "company-quotas":
                 from .jobs import validate_quotas
                 validate_quotas(data)
