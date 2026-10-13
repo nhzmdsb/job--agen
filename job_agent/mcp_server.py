@@ -19,9 +19,10 @@ def read_record(collection: str, record_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def write_record(collection: str, data: dict[str, Any], record_id: str | None = None,
-                 expected_version: int = 0, actor: str = "agent", reason: str = "") -> dict[str, Any]:
-    """Create (expected_version=0) or replace using the version you read. Supply the entire data object, preserving fields. No automatic merge, deduplication or evaluation."""
-    return Store().put(collection, data, record_id, expected_version, actor, reason)
+                 expected_version: int = 0, actor: str = "agent", reason: str = "",
+                 quota_confirm: bool = False, quota_reason: str = "") -> dict[str, Any]:
+    """Create or version-check replace, preserving unknown fields. Structured jobs enforce tombstone deduplication and quotas; overrides require explicit user confirmation and a reason."""
+    return Store().put(collection, data, record_id, expected_version, actor, reason, quota_confirm=quota_confirm, quota_reason=quota_reason)
 
 
 @mcp.tool()

@@ -6,10 +6,13 @@ from .store import COLLECTIONS, Store
 
 def main():
     parser = argparse.ArgumentParser(description="AI-managed job search records; JSON in/out")
-    parser.add_argument("--db", help="SQLite path; otherwise JOB_AGENT_DB or data/workspace.sqlite3")
+    parser.add_argument("--db", help="SQLite path; otherwise JOB_AGENT_DB or private user data directory")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init")
     sub.add_parser("export")
+    sub.add_parser("import")
+    sub.add_parser("sync")
+    sub.add_parser("review-pending")
     for command in ("list", "get", "put", "history"):
         p = sub.add_parser(command)
         p.add_argument("collection", choices=COLLECTIONS)
@@ -23,6 +26,8 @@ def main():
             p.add_argument("--expected-version", type=int, default=0)
             p.add_argument("--actor", default="agent")
             p.add_argument("--reason", default="")
+            p.add_argument("--quota-confirm", action="store_true")
+            p.add_argument("--quota-reason", default="")
     args = parser.parse_args()
     try:
         store = Store(args.db)
@@ -30,10 +35,18 @@ def main():
             result = {"database": str(store.path), "collections": COLLECTIONS}
         elif args.command == "export":
             result = store.export()
+        elif args.command == "import":
+            result = store.restore(json.load(sys.stdin))
+        elif args.command == "sync":
+            from .sync import Sync
+            result = Sync(store).run()
+        elif args.command == "review-pending":
+            from .review import review_queue
+            result = review_queue(store)
         elif args.command == "list":
             result = store.list(args.collection, args.limit, args.offset)
         elif args.command == "put":
-            result = store.put(args.collection, json.load(sys.stdin), args.id, args.expected_version, args.actor, args.reason)
+            result = store.put(args.collection, json.load(sys.stdin), args.id, args.expected_version, args.actor, args.reason, quota_confirm=args.quota_confirm, quota_reason=args.quota_reason)
         else:
             result = getattr(store, args.command)(args.collection, args.id)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
