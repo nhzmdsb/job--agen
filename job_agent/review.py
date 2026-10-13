@@ -29,7 +29,7 @@ def profile_hash(data):
 
 
 def translation_hash(data):
-    return hashlib.sha256(json.dumps({k: data.get(k) for k in ("title", "summary", "jd")}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps({k: data.get(k) for k in ("title", "jd")}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 def validate_assessment(data):

@@ -63,7 +63,7 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(project(self.job, self.profile, self.store)['view']['stale'])
         translated = {'source_hash': translation_hash(self.job['data']), 'title_zh': '虚构', 'summary_zh': '虚构摘要', 'jd_zh': '虚构完整原文'}
         self.job = self.store.patch('jobs', 'one', {'translation': translated}, self.job['version'])
-        self.job = self.store.patch('jobs', 'one', {'city': '杭州', 'tags': ['changed']}, self.job['version'])
+        self.job = self.store.patch('jobs', 'one', {'city': '杭州', 'tags': ['changed'], 'summary': 'Updated generated summary'}, self.job['version'])
         self.assertTrue(project(self.job, self.profile, self.store)['view']['translation_valid'])
         self.job = self.store.patch('jobs', 'one', {'jd': '新虚构原文'}, self.job['version'])
         self.assertFalse(project(self.job, self.profile, self.store)['view']['translation_valid'])
