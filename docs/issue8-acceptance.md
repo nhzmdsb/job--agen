@@ -1,6 +1,6 @@
 # Issue #8 第一批工程验收
 
-2026-10-13；分支 `feat/issue8-incremental-worker` 从 V0 `feat/v0-workbench` 建立。PR 暂以 V0 分支为目标；V0 合并后调整目标。
+2026-10-13；分支 `feat/issue8-incremental-worker` 从 V0 `feat/v0-workbench` 建立。集成顺序为先合并 PR #2，再将 PR #9 目标改为 main，核对仅包含本批增量后合并。Issue、AGENTS.md、数据/协作说明与 Worker 契约采用相同的判断保护、复用和刷新约定。
 
 ## 已完成
 
