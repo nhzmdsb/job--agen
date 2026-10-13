@@ -1,4 +1,4 @@
-# 共享工作台协作协议 V0
+# 共享工作台协作协议 V1
 
 公开代码仓库不接收个人资料。共享权威源为已确认 private 的 `nhzmdsb/job--agen-data`；SQLite、附件、设置、备份位于本地私有目录。凭据只由已授权 Git 凭据管理器使用，不能复制到文件、日志、Prompt 或浏览器。
 
@@ -20,6 +20,8 @@ task 为 research/strategy/resume/interview；可查页面选项。HTTP 409 表�
 
 CLI `python -m job_agent.cli` 的 list/get/put/history/export/import/sync 使用同一数据。put 从标准输入接收完整 data，必须保留未知字段并传 --expected-version；import 从标准输入接收 export 快照，验证后原子恢复原 ID/版本/历史。MCP `python -m job_agent.mcp_server` 保留 stdio 工具和同样的版本化写入规则。没有内置 LLM，不自动投递。
 
+Worker 常规更新已有岗位使用选择性更新，具体上下文、批量查重、更新与合并入口见 [Worker 契约](worker-contract.md)。对象递归合并、数组整体替换，未提交字段保留；先检查版本，无变化不增加版本、历史或同步任务。本人颜色、颜色理由和 human_judgment 受保护，修改前必须在对话中询问，获同意后提交 human_confirm、confirmation_reason、reason 与 expected_version；操作者名称不能绕过。普通备注、标签、兴趣和进度允许 Agent 编辑。
+
 ## 获授权的云端会话直接写私有 GitHub
 
 1. 再次读取仓库元信息确认 private；读取默认分支和目标文件及 blob SHA。
@@ -27,6 +29,8 @@ CLI `python -m job_agent.cli` 的 list/get/put/history/export/import/sync 使用
 3. 检查原 version，修改 data，version 加一，updated_at 使用 UTC ISO 时间；向 history 追加相同 envelope 和 actor/reason。历史版本从 1 连续到当前版本，最新历史与当前记录一致。
 4. 用 GitHub Contents API PUT 并提供刚读到的文件 SHA。409/422 时重新读取，保留自己的建议内容供合并；不强制写、不覆盖其他会话。
 5. 原文件先保存为 `attachments/{sha256}`，读回校验内容哈希，再写 artifacts 记录并把 ID 加到岗位 artifacts 数组。只有名称/摘要不得声明已保存原文件。
+
+直接改远端 JSON 不经过本地 Store，不能当作规避本人判断保护的路径；仍须遵守上述对话确认、保留来源和历史约定。能够访问本地接口的 Worker 使用 Store 入口，让程序检查编辑边界。无变化时不提交远端新版本。
 
 新增岗位保留原始 URL、完整 JD 或招聘入口、访问时间和资格证据。先查全部岗位，包括垃圾桶与 dedupe_keys；重复不恢复、不再推荐。招聘活动年份、目标届别、允许毕业年份分开；未知资格保持 unknown，不打分、不因兴趣不明排除。生命周期改变追加 application_history；企业同批次名额超额只能在明确确认后记录原因。用户控制简历、策略及最终申请。
 
@@ -50,7 +54,11 @@ Notion 重读只创建/更新 profiles/candidate-proposal：base_version 为读�
 
 不能接受的职责必须引用实际职责与私有档案中的明确偏好；不能仅从最低学历推断岗位不值得考虑。职责不明保留未知。
 
-job_hash 直接使用队列提供值，计算方式见 records.md。档案或岗位事实变化后旧 Work 结论失效；备注不失效。翻译另存 translation={title_zh,summary_zh,jd_zh,source_hash:job_hash,generated_at}，jd_zh 完整翻译原文各节（职责、资格、福利等），不能用摘要代替全文；英文及中英混合岗位都处理。只有标题摘要的旧记录需补全文。不改原始 title/jd。没有有效翻译仍显示原文，不阻塞资格判断。人工备注/兴趣/颜色/展示决定、附件和投递进度必须保留；垃圾桶不恢复，已投递及后续阶段不自动调整。
+job_hash 直接使用队列提供值，计算方式见 records.md。岗位事实或有效已确认条件变化才重核；待确认资料和普通备注变化不触发。旧推荐保留颜色与依据并提示“待重核”，旧米色不自动升级。绿色与兴趣独立，黄色表示明确不利因素，灰色只用于读过 JD 仍有重要歧义；未读、读取失败、事实已存但未判断进入内部待办。
+
+翻译另存 translation={title_zh,summary_zh,jd_zh,source_hash:translation_hash,generated_at}，translation_hash 只依据 title/jd 原文。jd_zh 完整翻译原文各节（职责、资格、福利等），不能用摘要代替全文；英文及中英混合岗位都处理。只有标题摘要的旧记录需补全文。不改原始 title/jd。没有有效翻译仍显示原文，不阻塞资格判断。未提交的普通字段、附件关联和历史保留，本人判断按确认规则修改；垃圾桶不恢复，已合并及已投递后续阶段不进入自动待办。
+
+同样事实、有效条件和已完成结果继续复用；条件变化使用缓存 JD。没有 7 天或两周强制刷新；只在来源明确变化、具体更新线索或本人要求时刷新详情。失败保留旧 JD、翻译与判断，分开记录尝试/成功时间；保留 24 小时退避，能力修复后的明确重试可提前执行。本轮检查新信息的范围由任务规定，不要求每日重扫三个官方入口。
 
 来源问题 source_problems 的 pending 进入清单；有实际新证据才标记核验完成，访问失败保留原文并说明未知。每批在 runs 记录完成、失败、剩余，工作中断后重新读取队列续跑；无变化不追加无意义版本。写回继续用原版本化 HTTP/CLI 或 GitHub SHA 检查，409/422 重新读取，不覆盖用户更新。
 

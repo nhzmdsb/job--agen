@@ -1,5 +1,6 @@
 """Transactional JSON storage. Business interpretation belongs to the agent."""
 import json
+from copy import deepcopy
 import os
 import sqlite3
 from contextlib import contextmanager, nullcontext
@@ -8,6 +9,14 @@ from pathlib import Path
 from uuid import uuid4
 
 COLLECTIONS = ("sources", "leads", "jobs", "runs", "artifacts", "profiles")
+
+
+def merge_fields(old, patch):
+    """Objects merge recursively; arrays and scalar values replace."""
+    result = dict(old)
+    for key, value in patch.items():
+        result[key] = merge_fields(result[key], value) if isinstance(value, dict) and isinstance(result.get(key), dict) else value
+    return result
 
 
 def private_home():
@@ -93,13 +102,14 @@ class Store:
             rows = db.execute("SELECT * FROM records WHERE collection=? ORDER BY created_at,id LIMIT ? OFFSET ?", (collection, limit + 1, offset)).fetchall()
             return {"items": [self.decode(r) for r in rows[:limit]], "next_offset": offset + limit if len(rows) > limit else None}
 
-    def put(self, collection, data, record_id=None, expected_version=0, actor="agent", reason="", quota_confirm=False, quota_reason="", _db=None):
-        """Create at version 0, or replace a record using its last read version."""
+    def put(self, collection, data, record_id=None, expected_version=0, actor="agent", reason="", quota_confirm=False, quota_reason="", _db=None, *, human_confirm=False, confirmation_reason="", _human=False, _merge=False):
+        """Create or CAS update; jobs preserve omitted fields."""
         self.validate(collection)
         if not isinstance(data, dict):
             raise ValueError("data must be a JSON object")
         if type(expected_version) is not int or expected_version < 0:
             raise ValueError("expected_version must be a nonnegative integer")
+        data = deepcopy(data)
         encoded = json.dumps(data, ensure_ascii=False, allow_nan=False)
         record_id = record_id or str(uuid4())
         if not isinstance(record_id, str) or not record_id:
@@ -112,6 +122,29 @@ class Store:
             current = old["version"] if old else 0
             if expected_version != current:
                 raise Conflict(f"version conflict: expected {expected_version}, current {current}; read again before writing")
+            previous = json.loads(old["data"]) if old else {}
+            if collection == "jobs":
+                # A label such as actor='workbench' never grants human authority.
+                data = merge_fields(previous, data)
+                if data.get("merged_into") != previous.get("merged_into") and not _merge:
+                    raise ValueError("use merge_jobs with both record versions")
+                authors = dict(previous.get("judgment_authorship", {}))
+                if data.get("judgment_authorship", authors) != authors:
+                    raise ValueError("judgment_authorship is store-managed")
+                groups = {"color": ("color", "color_reason"), "human_judgment": ("human_judgment",)}
+                for group, fields in groups.items():
+                    changed = any(data.get(k) != previous.get(k) for k in fields)
+                    legacy = any(previous.get(k) for k in fields)
+                    protected = authors.get(group) == "human" or (group not in authors and legacy)
+                    if changed and protected:
+                        if human_confirm is not True or not isinstance(confirmation_reason, str) or not confirmation_reason.strip() or not isinstance(reason, str) or not reason.strip():
+                            raise Conflict("本人判断受保护：先在对话中询问，再提交 human_confirm、confirmation_reason、修改理由和预期版本")
+                    if changed:
+                        authors[group] = "human" if _human or protected or group == "human_judgment" else "agent"
+                if authors:
+                    data["judgment_authorship"] = authors
+                if not _human and previous.get("stage") == "trash" and data.get("stage") != "trash":
+                    raise Conflict("Agent 不得恢复回收站岗位")
             if collection == "profiles" and record_id == "company-quotas":
                 from .jobs import validate_quotas
                 validate_quotas(data)
@@ -119,13 +152,35 @@ class Store:
                 from .jobs import prepare
                 data = prepare(db, data, self.decode(old) if old else None, record_id, {"quota_confirm": quota_confirm, "quota_reason": quota_reason, "reason": reason}, Conflict)
                 encoded = json.dumps(data, ensure_ascii=False, allow_nan=False)
+            else:
+                encoded = json.dumps(data, ensure_ascii=False, allow_nan=False)
+            if old and data == previous:
+                return self.decode(old)
             version = current + 1
             created = old["created_at"] if old else now
+            if human_confirm is True and confirmation_reason:
+                reason = f"{reason}\n本人确认：{confirmation_reason}".strip()
             values = (collection, record_id, version, created, now, encoded)
             db.execute("INSERT OR REPLACE INTO records VALUES (?,?,?,?,?,?)", values)
             db.execute("INSERT INTO history VALUES (?,?,?,?,?,?,?,?)", (*values, actor, reason))
             db.execute("INSERT OR REPLACE INTO outbox VALUES (?,?,?)", (collection, record_id, version))
             return self.decode(db.execute("SELECT * FROM records WHERE collection=? AND id=?", (collection, record_id)).fetchone())
+
+    def patch(self, collection, record_id, patch, expected_version, **options):
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be a JSON object")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            old = self.decode(db.execute("SELECT * FROM records WHERE collection=? AND id=?", (collection, record_id)).fetchone())
+            return self.put(collection, merge_fields(old["data"], patch), record_id, expected_version, _db=db, **options)
+
+    def records(self, collection=None):
+        """Current records only; do not load history for work discovery."""
+        if collection is not None:
+            self.validate(collection)
+        with self.connection() as db:
+            rows = db.execute("SELECT * FROM records WHERE collection=? ORDER BY id", (collection,)) if collection else db.execute("SELECT * FROM records ORDER BY collection,id")
+            return [self.decode(row) for row in rows]
 
     def history(self, collection, record_id):
         self.validate(collection)

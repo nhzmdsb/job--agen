@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin
 
 from .collect import extract, text
-from .jobs import identity
+from .jobs import identity, identity_keys
 from .store import Store, private_home
 from .sync import process_lock
 
@@ -241,7 +241,7 @@ def priority(link):
     return 0 if re.search(r"trainee|sales|commercial|procurement|logistics|marketing|product|销售|售前|产品|咨询|实施", link["title"], re.I) else 1
 
 
-def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=fetch):
+def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=fetch, refresh=False, retry=False):
     store, home = store or Store(), home or private_home()
     with process_lock(home / "discovery.lock"):
         now = datetime.now(timezone.utc).isoformat()
@@ -249,9 +249,31 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
             profile = store.get("profiles", "candidate")
         except KeyError:
             profile = None
-        jobs = [r for r in store.export()["records"] if r["collection"] == "jobs"]
-        known = {key: r for r in jobs for key in [identity(r["data"]), *r["data"].get("dedupe_keys", [])]}
-        result = {"started_at": now, "scope": {}, "new_job_ids": [], "incomplete_jd_ids": [], "errors": [], "trash_skipped": 0, "details_attempted": 0}
+        jobs = [r for r in store.records() if r["collection"] == "jobs"]
+        known = {key: r for r in jobs for key in identity_keys(r["data"])}
+        result = {"started_at": now, "scope": {}, "new_job_ids": [], "incomplete_jd_ids": [], "errors": [], "trash_skipped": 0, "details_attempted": 0, "details_read": 0, "list_discovered": 0, "skipped": 0, "reassessed": 0, "failed": 0, "status": "running"}
+        run = store.put("runs", result, actor="discovery", reason="开始增量扫描")
+        def checkpoint():
+            nonlocal run
+            from .review import review_queue
+            remaining, offset = [], 0
+            while True:
+                page = review_queue(store, 200, offset)
+                remaining.extend({"job_id": item["record"]["id"], "tasks": item["tasks"]} for item in page["items"])
+                if page["next_offset"] is None:
+                    break
+                offset = page["next_offset"]
+            for lead in store.records("leads"):
+                entry = lead["data"]
+                if not entry.get("detail_url"):
+                    continue
+                old = next((known[k] for k in identity_keys(entry) if k in known), None)
+                if old and (old["data"].get("merged_into") or old["data"].get("stage", "pool") not in ("pool", "preparing")):
+                    continue
+                if not old or not old["data"].get("jd") or entry.get("detail_error"):
+                    remaining.append({"lead_id": lead["id"], "tasks": ["detail"], "retry_after": entry.get("retry_after", "")})
+            result["remaining"] = remaining
+            run = store.put("runs", result, run["id"], run["version"], actor="discovery", reason="记录可续做进度")
         for source in sources:
             try:
                 links, pages = enumerate_source(source, get)
@@ -262,10 +284,14 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                     lead_id = "discovered-" + identity({"url": link["detail_url"]})
                     lead = save(store, "leads", lead_id, {**link, "accessed_at": now, "artifacts": artifacts}, "官方目录发现岗位链接")
                     leads.append(lead)
+                result["list_discovered"] += len(links)
+                result["scope"][source] = {"listed": len(links), "directory_pages": len(pages), "details_attempted": 0, "waiting": 0,
+                                           "coverage": "China search results" if source == "iff" else "China directory" if source == "ldc" else "campus directory"}
+                checkpoint()
                 attempted, waiting = 0, 0
                 for lead in leads:
                     link = lead["data"]
-                    old = known.get(identity(link))
+                    old = next((known[k] for k in identity_keys(link) if k in known), None)
                     if not old and link.get("job_id"):
                         try:
                             old = store.get("jobs", link["job_id"])
@@ -274,15 +300,22 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                     if old and old["data"].get("stage") == "trash":
                         result["trash_skipped"] += 1
                         continue
-                    if old and old["data"].get("jd"):
+                    if old and (old["data"].get("merged_into") or old["data"].get("stage", "pool") not in ("pool", "preparing")):
+                        result["skipped"] += 1
                         continue
-                    if old and link.get("retry_after", "") > now:
+                    if old and old["data"].get("jd") and not refresh:
+                        result["skipped"] += 1
+                        continue
+                    if not retry and link.get("retry_after", "") > now:
                         continue
                     if attempted >= batch:
                         waiting += 1
                         continue
                     attempted += 1
                     result["details_attempted"] += 1
+                    result["scope"][source]["details_attempted"] = attempted
+                    save(store, "leads", lead["id"], {"detail_attempted_at": now}, "开始读取详情")
+                    checkpoint()
                     found = {"company": link["company"], "title": link["title"], "url": link["url"], "jd": ""}
                     ids = list(artifacts)
                     failure = None
@@ -290,15 +323,23 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                         raw = get(link["detail_url"])
                         ids.append(evidence(store, home, link["detail_url"], raw, now))
                         found = detail(link, raw)
+                        if not isinstance(found.get("jd"), str) or not found["jd"].strip():
+                            raise ValueError("详情未取得完整 JD")
+                        result["details_read"] += 1
                     except (OSError, ValueError, KeyError, StopIteration) as exc:
                         failure = type(exc).__name__ + ": " + str(exc)
                         result["errors"].append({"url": link["detail_url"], "error": failure})
+                        result["failed"] += 1
                     # Directory links and canonical detail URLs can identify the same saved job.
                     old = old or known.get(identity(found))
-                    if old and (old["data"].get("stage") == "trash" or old["data"].get("jd")):
+                    if old and (old["data"].get("merged_into") or old["data"].get("stage", "pool") not in ("pool", "preparing") or (old["data"].get("jd") and not refresh)):
                         save(store, "leads", lead["id"], {"job_id": old["id"], "detail_checked_at": now}, "详情链接归并到既有岗位，不恢复垃圾桶")
                         if old["data"].get("stage") == "trash":
                             result["trash_skipped"] += 1
+                        continue
+                    if failure and old and old["data"].get("jd"):
+                        save(store, "leads", lead["id"], {"job_id": old["id"], "detail_attempted_at": now, "detail_error": failure, "retry_after": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()}, "刷新失败，保留已有结果")
+                        checkpoint()
                         continue
                     data = {"stage": "pool", "interest": "unknown", **(old["data"] if old else {}), **found, "accessed_at": now,
                             "discovery_source": source, "source_job_id": found.get("source_job_id", link["source_job_id"]), "source_listing": pages[0][0],
@@ -312,29 +353,36 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                     job = store.put("jobs", data, record_id, old["version"] if old else 0, "discovery", "官方新链接 → JD → 证据初筛；不自动投递")
                     for key in job["data"]["dedupe_keys"]:
                         known[key] = job
-                    save(store, "leads", lead["id"], {"job_id": job["id"], "detail_checked_at": now, "detail_error": failure,
+                    save(store, "leads", lead["id"], {"job_id": job["id"], "detail_attempted_at": now, "detail_checked_at": now, **({"detail_succeeded_at": now} if not failure else {}), "detail_error": failure,
                          "retry_after": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat() if failure else ""}, "保存实际详情处理进度")
                     if not old:
                         result["new_job_ids"].append(job["id"])
                     if not found["jd"]:
                         result["incomplete_jd_ids"].append(job["id"])
+                    checkpoint()
                 result["scope"][source] = {"listed": len(links), "directory_pages": len(pages), "details_attempted": attempted, "waiting": waiting,
                                            "coverage": "China search results" if source == "iff" else "China directory" if source == "ldc" else "campus directory"}
                 save(store, "sources", "discovery-" + source, {"last_checked_at": now, "scope": result["scope"][source], "artifacts": artifacts}, "真实扫描范围与下一批进度")
             except (OSError, ValueError, KeyError) as exc:
                 result["errors"].append({"source": source, "error": type(exc).__name__ + ": " + str(exc)})
+                result["failed"] += 1
+                checkpoint()
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
-        store.put("runs", result, actor="discovery", reason="保存官方岗位发现实际结果与失败，不刷新固定 URL")
+        checkpoint()
+        result["status"] = "partial" if result["errors"] or result["remaining"] else "completed"
+        checkpoint()
         return result
 
 
 def main():
     parser = argparse.ArgumentParser(description="从企业当前目录发现新岗位，并分批读取详情与初筛")
     parser.add_argument("--batch", type=int, default=4, help="每个来源本轮最多读取的详情数量")
+    parser.add_argument("--refresh", action="store_true", help="明确要求刷新已有详情")
+    parser.add_argument("--retry", action="store_true", help="能力修复后明确重试，绕过失败退避")
     args = parser.parse_args()
     if not 1 <= args.batch <= 50:
         parser.error("batch 必须为 1..50")
-    print(json.dumps(discover(batch=args.batch), ensure_ascii=False))
+    print(json.dumps(discover(batch=args.batch, refresh=args.refresh, retry=args.retry), ensure_ascii=False))
 
 
 if __name__ == "__main__":
