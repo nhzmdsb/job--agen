@@ -265,7 +265,7 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                 offset = page["next_offset"]
             for lead in store.records("leads"):
                 entry = lead["data"]
-                if not entry.get("detail_url"):
+                if entry.get("status") == "skipped" or not entry.get("detail_url"):
                     continue
                 old = next((known[k] for k in identity_keys(entry) if k in known), None)
                 if old and (old["data"].get("merged_into") or old["data"].get("stage", "pool") not in ("pool", "preparing")):
@@ -291,6 +291,9 @@ def discover(store=None, home=None, batch=4, sources=("ldc", "ztc", "iff"), get=
                 attempted, waiting = 0, 0
                 for lead in leads:
                     link = lead["data"]
+                    if link.get("status") == "skipped":
+                        result["skipped"] += 1
+                        continue
                     old = next((known[k] for k in identity_keys(link) if k in known), None)
                     if not old and link.get("job_id"):
                         try:

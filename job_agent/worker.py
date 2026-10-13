@@ -38,7 +38,7 @@ def merge_jobs(store, target_id, other_id, target_version, other_version, reason
         # Keep the donor intact, and link its full evidence on the surviving record.
         donor = store.put("jobs", {"merged_into": target_id}, other_id, other_version, reason=reason, _db=db, _merge=True)
         data = target["data"]
-        aliases = data.get("identity_aliases", []) + [{k: other["data"][k] for k in ("source", "discovery_source", "source_job_id", "url", "boss_url") if k in other["data"]}] + other["data"].get("identity_aliases", [])
+        aliases = data.get("identity_aliases", []) + [{k: other["data"][k] for k in ("source", "discovery_source", "source_job_id", "url", "detail_url", "boss_url") if k in other["data"]}] + other["data"].get("identity_aliases", [])
         evidence = data.get("merged_evidence", []) + [{"id": other_id, "version": other_version, "data": other["data"], "reason": reason}]
         result = store.put("jobs", merge_fields(data, {"identity_aliases": aliases, "merged_evidence": evidence, "dedupe_keys": sorted(identity_keys(data) | identity_keys(other["data"])), "artifacts": list(dict.fromkeys(data.get("artifacts", []) + other["data"].get("artifacts", [])))}), target_id, target_version, reason=reason, _db=db, _merge=True)
         return {"record": result, "merged": donor, "version": result["version"], "action": "updated"}

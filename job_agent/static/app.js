@@ -63,8 +63,11 @@ function fillSide() {
   $('detail-company').textContent=current?.data.company || '保留线索，稍后补全';
   $('detail-title').textContent=current?.view.title || '保存机会';
   const links=$('source-links'); links.replaceChildren();
-  for(const [key,label] of [['url','原始来源 ↗'],['boss_url','BOSS 来源 ↗']]) {
+  const seenLinks=new Set();
+  for(const [key,label] of [['detail_url','岗位详情 ↗'],['url','原始来源 ↗'],['boss_url','BOSS 来源 ↗']]) {
     const url=current?.data[key]; if(!url || !/^https?:\/\//i.test(url))continue;
+    if(seenLinks.has(url))continue;
+    seenLinks.add(url);
     const a=node('a',label); a.href=url; a.target='_blank'; a.rel='noopener noreferrer'; links.append(a);
   }
   const box=$('attachments'); box.replaceChildren();
