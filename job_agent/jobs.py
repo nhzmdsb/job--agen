@@ -84,7 +84,7 @@ def prepare(db, data, old, record_id, options, conflict_type):
         raise ValueError("请填写公司与岗位名称，招聘入口也可以作为线索保存")
     if data.get("stage", "pool") not in STAGES:
         raise ValueError("未知进度")
-    for key in ("url", "detail_url", "boss_url"):
+    for key in ("url", "detail_url", "boss_url", "application_url", "company_url", "recruitment_url"):
         if data.get(key) and (not isinstance(data[key], str) or urlsplit(data[key]).scheme not in ("http", "https")):
             raise ValueError("来源链接必须以 http:// 或 https:// 开头")
     if data.get("qualification", "unknown") not in ("unknown", "eligible", "disadvantage"):
@@ -96,6 +96,8 @@ def prepare(db, data, old, record_id, options, conflict_type):
         if other_id != record_id and other.get("company") and not other.get("merged_into") == record_id and not data.get("merged_into") == other_id and aliases.intersection(identity_keys(other)):
             raise conflict_type("此岗位已保存（包括垃圾桶），不会再次推荐")
     previous = old["data"] if old else {}
+    if data.get("human_judgment") != previous.get("human_judgment") and not isinstance(data.get("human_judgment", ""), str):
+        raise ValueError("本人判断必须是文字")
     work = data.get("screening", {}).get("work")
     if work != previous.get("screening", {}).get("work"):
         from .review import validate_assessment
