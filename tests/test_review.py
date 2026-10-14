@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from job_agent.review import DIMENSIONS, content_hash, project, review_queue, confirm_proposal
+from job_agent.review import DIMENSIONS, content_hash, human_judgment_hash, project, review_queue, confirm_proposal
 from job_agent.store import Store, Conflict
 from job_agent.web import create_app
 
@@ -141,6 +141,79 @@ class ReviewTests(unittest.TestCase):
         prompt = response.get_json()["prompt"]
         for text in ("两三句话", "JD 未要求工作年限", "专业要求有矛盾", "医学专业只是优先", "全国出差", "空白不是待办", "不能把普通来源伪称投递入口", "Agent 不得替本人补造理由"):
             self.assertIn(text, prompt)
+
+    def test_concise_assessment_keeps_legacy_reason_and_validates_shape(self):
+        data = self.work("disadvantage")
+        work = data["screening"]["work"]
+        work.update(recommendation="建议暂不优先。", reasons=["虚构依据一", "虚构依据二"])
+        view = self.save(data)["view"]
+        self.assertEqual(view["recommendation"], work["recommendation"])
+        self.assertEqual(view["reasons"], work["reasons"])
+        self.assertEqual(view["reason"], "Fixture assessment")
+        for reasons in ([], ["one"], ["one", ""], [1, "two"], ["a", "b", "c", "d"]):
+            bad = copy.deepcopy(data)
+            bad["screening"]["work"]["reasons"] = reasons
+            with self.assertRaises(ValueError):
+                self.save(bad)
+        # Old assessments remain readable without a database rewrite.
+        legacy_data = self.work()
+        legacy_data["title"] = "Legacy fictional trainee"
+        legacy_data.pop("dedupe_keys", None)
+        legacy_data["screening"]["work"]["job_hash"] = content_hash(legacy_data)
+        legacy = self.store.put("jobs", legacy_data, "legacy-assessment")
+        self.assertEqual(project(legacy, self.profile)["view"]["recommendation"], "")
+
+    def test_discard_and_undo_preserve_identity_and_check_versions(self):
+        self.save(self.work("eligible"))
+        client = create_app(self.store, Path(self.temp.name)).test_client()
+        headers = {"X-Workspace": "1"}
+        original = copy.deepcopy(self.job)
+        response = client.patch("/api/records/jobs/fixture", json={"expected_version": original["version"], "patch": {"stage": "trash", "rejection_reason": ""}, "reason": "本人不考虑"}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        removed = response.get_json()
+        self.assertEqual(removed["id"], original["id"])
+        self.assertEqual(removed["data"]["screening"], original["data"]["screening"])
+        self.assertEqual(removed["data"]["notes"], original["data"]["notes"])
+        self.assertEqual(review_queue(self.store)["count"], 0)
+        response = client.patch("/api/records/jobs/fixture", json={"expected_version": removed["version"], "patch": {"stage": "pool", "rejection_reason": ""}, "reason": "撤销不考虑"}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        restored = response.get_json()
+        self.assertEqual(restored["data"]["stage"], "pool")
+        self.assertEqual(len(self.store.history("jobs", "fixture")), 4)
+        self.store.patch("jobs", "fixture", {"notes": "Another editor"}, restored["version"])
+        response = client.patch("/api/records/jobs/fixture", json={"expected_version": restored["version"], "patch": {"stage": "trash"}, "reason": "Stale discard"}, headers=headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store.get("jobs", "fixture")["data"]["notes"], "Another editor")
+
+    def test_feedback_is_separate_versioned_task_and_preserves_profile(self):
+        self.save(self.work("eligible"))
+        before = self.store.get("profiles", "candidate")
+        client = create_app(self.store, Path(self.temp.name)).test_client()
+        headers = {"X-Workspace": "1"}
+        text = "这个岗位地点太偏，但不排除杭州。"
+        result = client.patch("/api/records/jobs/fixture", json={"expected_version": self.job["version"], "patch": {"human_judgment": text}, "human_confirm": True, "confirmation_reason": "本人输入", "reason": "本人反馈"}, headers=headers)
+        self.assertEqual(result.status_code, 200)
+        self.job = self.store.get("jobs", "fixture")
+        item = review_queue(self.store)["items"][0]
+        self.assertIn("feedback", item["tasks"])
+        self.assertNotIn("assessment", item["tasks"])
+        self.assertEqual(item["human_judgment_hash"], human_judgment_hash(self.job["data"]))
+        denied = client.patch("/api/worker/records/jobs/fixture", json={"expected_version": self.job["version"], "patch": {"human_judgment": "Agent rewrite"}, "reason": "Rewrite"}, headers=headers)
+        self.assertEqual(denied.status_code, 409)
+        response = client.patch("/api/worker/records/jobs/fixture", json={"expected_version": self.job["version"], "patch": {"screening": {"work": {"reason": "已收到：此岗位不优先；其他杭州岗位仍可看。", "human_judgment_hash": item["human_judgment_hash"]}}}, "reason": "回应本人反馈"}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.job = self.store.get("jobs", "fixture")
+        self.assertFalse(project(self.job, self.profile)["view"]["feedback_pending"])
+        self.assertEqual(self.job["data"]["human_judgment"], text)
+        self.assertEqual(self.store.get("profiles", "candidate"), before)
+        version = self.job["version"]
+        self.job = self.store.patch("jobs", "fixture", {"human_judgment": "新看法"}, version, _human=True, human_confirm=True, confirmation_reason="本人修改", reason="本人修改")
+        stale = client.patch("/api/worker/records/jobs/fixture", json={"expected_version": version, "patch": {"screening": {"work": {"human_judgment_hash": item["human_judgment_hash"]}}}, "reason": "旧回应"}, headers=headers)
+        self.assertEqual(stale.status_code, 409)
+        with self.assertRaises(ValueError):
+            self.store.patch("jobs", "fixture", {"screening": {"work": {"reason": "旧回应"}}}, self.job["version"])
+        with self.assertRaises(ValueError):
+            self.store.patch("jobs", "fixture", {"human_judgment": {"bad": True}}, self.job["version"], _human=True, human_confirm=True, confirmation_reason="本人修改", reason="本人修改")
 
     def test_shared_company_and_recruitment_urls_do_not_merge_jobs(self):
         links = {"company_url": "https://example.invalid/company", "recruitment_url": "https://example.invalid/jobs"}

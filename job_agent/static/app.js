@@ -1,10 +1,11 @@
 const $ = id => document.getElementById(id);
 const stages = {pool:'机会池',pending:'内部待办',preparing:'准备投递',applied:'已投递',interview:'面试中',ended:'已结束',trash:'回收站'};
-const colors = {green:'符合条件，值得考虑',yellow:'有不利条件',beige:'旧判断待重核',grey:'已读但有歧义'};
+const colors = {green:'符合条件，值得考虑',yellow:'有不利条件',beige:'旧判断待重核',grey:'待确认'};
 let records = [], artifacts = [], quota = {version:0,data:{items:[]}}, stage = 'pool', current = null;
 let saving = Promise.resolve(), editing = false, editBaseline = {}, editVersion = null, syncConflict = null, resolvedData = {}, lastChecked;
 let quotaRequest = null;
 let profileRecord = null, profileProposal = null;
+let toastTimer, feedbackVersion;
 const form = $('job-form');
 
 async function api(path, method='GET', data) {
@@ -15,11 +16,11 @@ async function api(path, method='GET', data) {
   if (!response.ok) { const error = new Error(result.error || '操作未完成'); error.result=result; error.status=response.status; throw error; }
   return result;
 }
-function toast(message) { $('toast').textContent=message; $('toast').hidden=false; setTimeout(()=>{$('toast').hidden=true;},5000); }
+function toast(message, undo) { clearTimeout(toastTimer); $('toast').replaceChildren(node('span',message)); if(undo){const button=node('button','撤销');button.onclick=undo;$('toast').append(button);} $('toast').hidden=false; toastTimer=setTimeout(()=>{$('toast').hidden=true;},undo?12000:5000); }
 function node(tag, text, className) { const el=document.createElement(tag); if(text!==undefined) el.textContent=text; if(className) el.className=className; return el; }
 function safeLink(url, label) { const a=node('a',label); if(/^https?:\/\//i.test(url)){a.href=url;a.target='_blank';a.rel='noopener noreferrer';} return a; }
 function dataStage(r) { return r.data.stage || 'pool'; }
-function inView(record, key) { if(record.view.merged)return false; if(key==='pending')return ['pool','preparing'].includes(dataStage(record)) && (record.view.internal_pending || record.view.stale || record.view.translation_pending || (record.data.source_problems||[]).some(p=>p.status!=='resolved')); return key==='hidden' ? record.view.low_priority : dataStage(record)===key && (key!=='pool' || (!record.view.low_priority && !record.view.internal_pending)); }
+function inView(record, key) { if(record.view.merged)return false; if(key==='pending')return ['pool','preparing'].includes(dataStage(record)) && (record.view.internal_pending || record.view.stale || record.view.feedback_pending || record.view.translation_pending || (record.data.source_problems||[]).some(p=>p.status!=='resolved')); return key==='hidden' ? record.view.low_priority : dataStage(record)===key && (key!=='pool' || (!record.view.low_priority && !record.view.internal_pending)); }
 function remember(record) { const i=records.findIndex(r=>r.id===record.id); if(i<0) records.push(record); else records[i]=record; }
 function render() {
   const nav=$('stages'); nav.replaceChildren();
@@ -36,15 +37,16 @@ function render() {
   const cards=$('cards'); cards.replaceChildren();
   for (const record of shown) {
     const d=record.data, view=record.view, color=view.color;
-    const card=node('button',undefined,'card '+color); card.setAttribute('aria-label',`${d.company} ${view.title} ${colors[color]}`);
-    const top=node('div',undefined,'top'); top.append(node('h2',view.title),node('span',d.salary || '薪资待确认','salary'));
+    const card=node('article',undefined,'card '+color), open=node('button',undefined,'card-open'); open.setAttribute('aria-label',`${d.company} ${view.title} ${colors[color]}`);
+    const top=node('div',undefined,'top'); top.append(node('h2',view.title));if(d.salary)top.append(node('span',d.salary,'salary'));
     const company=node('div',d.company,'company'); if(d.possible_no_fit) company.append(node('span','  ! 可能暂无合适岗位','warning'));
-    card.append(top,company,node('div',[d.city || '城市未知',d.education || '学历待核对',d.experience || '经验待核对'].join(' · '),'metadata'));
-    const tags=node('div',undefined,'tags'); const values=Array.isArray(d.tags)?d.tags:[];
-    for(const tag of values.slice(0,6)) tags.append(node('span',tag,'tag'));
-    card.append(tags,node('p',view.summary || (d.jd ? d.jd.slice(0,170) : '已保留招聘入口，完整 JD 尚未取得。'),'summary'),node('p',`${view.stale?'待重核 · ':''}${view.origin}：${view.reason}${view.low_priority?' · 已收起':''}`,'judgment'));
-    const foot=node('div',undefined,'card-footer'); foot.append(node('span',colors[color]),node('span',d.eligible_years?`可申请毕业年份：${d.eligible_years}`:'毕业年份待确认')); card.append(foot);
-    card.onclick=()=>openJob(record); cards.append(card);
+    open.append(top,company);if(d.city)open.append(node('div',d.city,'metadata'));
+    open.append(node('p',view.recommendation || (view.reason.length<=130?view.reason:'查看完整建议'),'judgment'));
+    if(view.reasons?.length)open.append(node('p',view.reasons[0],'summary'));
+    const foot=node('div',undefined,'card-footer'); foot.append(node('span',colors[color]));if(view.stale)foot.append(node('span','待重核'));if(view.feedback_pending)foot.append(node('span','本人反馈待回应'));open.append(foot);
+    open.onclick=()=>openJob(record);card.append(open);
+    if(dataStage(record)!=='trash'){const discard=node('button','不考虑 / 移入回收站','discard');discard.onclick=()=>discardRecord(record);card.append(discard);}
+    cards.append(card);
   }
   $('empty').hidden=shown.length>0;
   if(records.length) {$('empty').querySelector('h2').textContent='这里暂时没有机会'; $('empty').querySelector('p').textContent='可以切换进度、调整筛选，或保存新的招聘线索。';}
@@ -59,7 +61,7 @@ function fillForm(data) {
 }
 function fillSide() {
   if(!editing)$('stage-select').value=current?dataStage(current):'pool';
-  $('trash-job').textContent=current && dataStage(current)==='trash'?'从回收站恢复到机会池':'移入回收站';
+  $('trash-job').textContent=current && dataStage(current)==='trash'?'从回收站恢复到机会池':'不考虑 / 移入回收站';
   $('detail-company').textContent=current?.data.company || '保留线索，稍后补全';
   $('detail-title').textContent=current?.view.title || '保存机会';
   const links=$('source-links'); links.replaceChildren();
@@ -99,9 +101,12 @@ const kindLabels={mandatory:'强制要求',preferred:'优先条件',inferred:'�
 function fillReading() {
   const d=current.data,v=current.view,work=d.screening?.work;
   $('read-facts').textContent=[d.city,d.salary,d.education,d.experience,d.recruitment_year&&`招聘年份：${d.recruitment_year}`,d.target_cohort&&`面向届别：${d.target_cohort}`,d.eligible_years&&`允许毕业年份：${d.eligible_years}`].filter(Boolean).join(' · ');
-  $('read-summary').textContent=v.summary||'尚无中文摘要';
+  $('read-summary').hidden=true;
   $('translation-status').textContent=v.translation_valid?'完整中文 JD 由 Work 翻译，可展开查看原文。':v.translation_pending?'完整中文 JD 待 Work 补全，当前显示原文；已有标题和摘要不代表完成翻译。':'';
-  $('read-reason').textContent=v.reason;
+  $('read-reason').textContent=v.recommendation || (v.reason.length<=130?v.reason:'原判断较长，请展开查看完整建议。');
+  $('read-reasons').replaceChildren();for(const reason of v.reasons||[])$('read-reasons').append(node('li',reason));
+  $('legacy-reason-panel').hidden=!!v.recommendation || v.reason.length<=130;$('legacy-reason').textContent=v.reason;
+  $('feedback-state').textContent=v.feedback_pending?(['pool','preparing'].includes(dataStage(current))?'本人反馈已保存，待 Worker 回应。':'本人看法已保存；此阶段不进入自动待办。'):'';
   const evidence=$('read-evidence');evidence.replaceChildren();
   if(work) {
     if(v.stale)evidence.append(node('p','待重核：保留原判断与依据，等待补充核验。','warning'));
@@ -143,6 +148,7 @@ async function history() {
 async function openJob(record=null) {
   if($('detail').open && !(await flushNotes()))return;
   current=record ? await api(`/api/records/jobs/${encodeURIComponent(record.id)}`).then(r=>r.record) : null;
+  feedbackVersion=current?.version;$('feedback-panel').hidden=true;$('feedback-text').value=current?.data.human_judgment||'';$('feedback-status').textContent='';
   $('trash-reason').value=current?.data.rejection_reason||'';
   editing=false;fillForm(current?.data || {});$('prep-result').hidden=true;
   for(const id of ['form-status','upload-status','prompt-status','prompt','description']) { if('value' in $(id))$(id).value=''; else $(id).textContent=''; }
@@ -185,7 +191,19 @@ async function changeStage(requested, patch={}) {
   }
 }
 
-$('trash-job').onclick=()=>changeStage(dataStage(current)==='trash'?'pool':'trash',dataStage(current)==='trash'?{}:{rejection_reason:$('trash-reason').value.trim(),interest:'no'});
+async function discardRecord(record, reason='') {
+  await saving;
+  const original={stage:dataStage(record),rejection_reason:record.data.rejection_reason||''};
+  try {
+    const removed=await api(`/api/records/jobs/${encodeURIComponent(record.id)}`,'PATCH',{expected_version:record.version,patch:{stage:'trash',rejection_reason:reason},reason:'本人不考虑，移入回收站'});
+    remember(removed);if(current?.id===removed.id){current=removed;$('detail').close();}render();
+    toast('已移入回收站',async()=>{try{const restored=await api(`/api/records/jobs/${encodeURIComponent(removed.id)}`,'PATCH',{expected_version:removed.version,patch:original,reason:'本人撤销移入回收站'});remember(restored);render();toast('已撤销');}catch(error){toast(error.message);}});
+  }catch(error){toast(error.status===409?'岗位已变化，请重新打开后操作。':error.message);}
+}
+$('trash-job').onclick=()=>dataStage(current)==='trash'?changeStage('pool'):discardRecord(current,$('trash-reason').value.trim());
+$('feedback-button').onclick=()=>{$('feedback-panel').hidden=false;feedbackVersion=current.version;$('feedback-text').value=current.data.human_judgment||'';$('feedback-status').textContent='';$('feedback-text').focus();};
+$('feedback-cancel').onclick=()=>{$('feedback-panel').hidden=true;};
+$('feedback-form').onsubmit=async event=>{event.preventDefault();try{await patchCurrent({human_judgment:$('feedback-text').value},{expected_version:feedbackVersion,reason:'本人告诉 AI 我的看法'});$('feedback-panel').hidden=true;await refresh();toast(['pool','preparing'].includes(dataStage(current))?'已保存，Worker 下轮会回应这条看法':'本人看法已保存；此阶段不进入自动待办');}catch(error){$('feedback-status').textContent=error.status===409?'岗位已变化，原话仍保留。请复制后重新打开，再保存。':error.message;}};
 $('cancel-quota-confirm').onclick=()=>$('quota-confirm-dialog').close();
 $('quota-confirm-form').onsubmit=async event=> {
   event.preventDefault(); const reason=$('quota-reason').value.trim();

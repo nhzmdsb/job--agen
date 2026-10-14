@@ -32,6 +32,10 @@ def translation_hash(data):
     return hashlib.sha256(json.dumps({k: data.get(k) for k in ("title", "jd")}, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+def human_judgment_hash(data):
+    return hashlib.sha256((data.get("human_judgment") or "").encode()).hexdigest()
+
+
 def validate_assessment(data):
     work = data.get("screening", {}).get("work")
     if work is None:
@@ -42,6 +46,11 @@ def validate_assessment(data):
         raise ValueError("Work 判断须记录档案版本、时间和理由")
     if not isinstance(work.get("checks"), list) or not isinstance(work.get("questions"), list):
         raise ValueError("Work 判断须提供逐项证据与待确认清单")
+    if "recommendation" in work or "reasons" in work:
+        if not isinstance(work.get("recommendation"), str) or not work["recommendation"].strip() or not isinstance(work.get("reasons"), list) or not 2 <= len(work["reasons"]) <= 3 or any(not isinstance(r, str) or not r.strip() for r in work["reasons"]):
+            raise ValueError("简洁建议须包含一条 recommendation 和两到三条 reasons")
+    if "human_judgment_hash" in work and work["human_judgment_hash"] != human_judgment_hash(data):
+        raise ValueError("本人反馈已变化，请重新读取后回应")
     dimensions = set()
     for check in work["checks"]:
         if not isinstance(check, dict) or check.get("dimension") not in DIMENSIONS or check.get("kind") not in ("mandatory", "preferred", "inferred", "unknown", "unacceptable") or check.get("status") not in ("pass", "fail", "unknown"):
@@ -83,6 +92,7 @@ def project(record, profile, store=None):
             previous = next((h for h in store.history("profiles", "candidate") if h["version"] == work.get("profile_version")), None)
             assessed_profile_hash = profile_hash(previous["data"]) if previous else None
     fresh = bool(work and profile and assessed_profile_hash == effective_hash and work.get("job_hash") == fingerprint)
+    feedback_pending = bool((data.get("human_judgment") or work and work.get("human_judgment_hash")) and (not work or work.get("human_judgment_hash") != human_judgment_hash(data)))
     stale = bool(work and not fresh)
     decision = work.get("decision") if work else "unknown"
     legacy_beige = bool(work and not work.get("policy_version") and decision == "eligible" and data.get("interest") != "yes")
@@ -111,9 +121,10 @@ def project(record, profile, store=None):
             translation_fresh = any(translation.get("source_hash") == content_hash(h["data"]) and translation_hash(h["data"]) == original_hash for h in store.history("jobs", record["id"]))
     translated = bool(translation_fresh and translation.get("title_zh") and translation.get("summary_zh"))
     full_translation = bool(translated and isinstance(translation.get("jd_zh"), str) and translation["jd_zh"].strip())
-    low = bool(not manual and fresh and hard_fail(work) and data.get("stage", "pool") == "pool" and data.get("pool_visibility") != "show")
+    low = bool(not manual and fresh and not feedback_pending and hard_fail(work) and data.get("stage", "pool") == "pool" and data.get("pool_visibility") != "show")
     recommended = bool(work or manual)
-    return {**record, "view": {"color": color, "origin": origin, "reason": reason, "fresh": fresh and not legacy_beige, "stale": stale, "internal_pending": not recommended or not data.get("jd"), "merged": bool(data.get("merged_into")), "low_priority": low, "title": translation["title_zh"] if translated else data.get("title", ""), "summary": translation["summary_zh"] if translated else data.get("summary", ""), "jd": translation["jd_zh"] if full_translation else data.get("jd", ""), "translation_valid": full_translation, "translation_pending": needs_translation(data) and not full_translation, "translation_hash": original_hash, "job_hash": fingerprint}}
+    concise = work if work and not (manual and data.get("color_reason")) else {}
+    return {**record, "view": {"color": color, "origin": origin, "reason": reason, "recommendation": concise.get("recommendation", ""), "reasons": concise.get("reasons", []), "feedback_pending": feedback_pending, "human_judgment_hash": human_judgment_hash(data), "fresh": fresh and not legacy_beige, "stale": stale, "internal_pending": not recommended or not data.get("jd"), "merged": bool(data.get("merged_into")), "low_priority": low, "title": translation["title_zh"] if translated else data.get("title", ""), "summary": translation["summary_zh"] if translated else data.get("summary", ""), "jd": translation["jd_zh"] if full_translation else data.get("jd", ""), "translation_valid": full_translation, "translation_pending": needs_translation(data) and not full_translation, "translation_hash": original_hash, "job_hash": fingerprint}}
 
 
 def needs_translation(data):
@@ -136,12 +147,14 @@ def review_queue(store, limit=50, offset=0):
             tasks.append("detail")
         if not job["view"]["fresh"]:
             tasks.append("assessment")
+        if job["view"]["feedback_pending"]:
+            tasks.append("feedback")
         if job["view"]["translation_pending"]:
             tasks.append("translation")
         if any(p.get("status", "pending") == "pending" for p in record["data"].get("source_problems", [])):
             tasks.append("source_verification")
         if tasks:
-            items.append({"record": record, "job_hash": job["view"]["job_hash"], "translation_hash": job["view"]["translation_hash"], "tasks": tasks})
+            items.append({"record": record, "job_hash": job["view"]["job_hash"], "translation_hash": job["view"]["translation_hash"], "human_judgment_hash": job["view"]["human_judgment_hash"], "tasks": tasks})
     safe_profile = {**profile, "data": effective_profile(profile["data"])} if profile else None
     return {"profile": safe_profile, "effective_profile_hash": profile_hash(profile["data"]) if profile else None, "items": items[offset:offset + limit], "count": len(items), "next_offset": offset + limit if offset + limit < len(items) else None}
 
@@ -159,6 +172,10 @@ screening.work.reason 用两三句话直接说明是否值得看或申请及关�
 2. 工作内容值得考虑，但专业要求有矛盾：专业栏列了市场营销和食品相关专业，正文又写专业不限。你是农学专业，需要确认是否接受。
 3. 可以考虑。医学专业只是优先，你可以申请，但专业背景上不占优势。
 链接按用途保存：detail_url 是具体岗位详情，application_url 是投递入口，company_url 是公司官网，recruitment_url 是招聘目录；url 和 boss_url 保留原始来源。没有投递链接就说明投递入口待补齐，不能把普通来源伪称投递入口。不要因改文案重写历史私人判断；后续重核优先复用缓存 JD。"""
+    instruction += """\n先粗筛、按公司并行、困难入口及时停止投入；已略过入口记录 leads 的 skipped 状态和依据，不自动重返待办，明确新线索或本人要求才重访。
+判断投资优先级与硬性资格分别表达。普通协调职责不能抵消工科背景、英语要求与本人背景的差距，不用灰色中和明确的不利条件。虚构示例：不建议考虑。岗位偏研发支持，要求工科背景和较强英语，与你目前的背景不匹配。该公司的销售岗位可另看。不能补造 2027 届限制、工作年限或把助理岗位升级成经理。
+新判断同时写 recommendation（一句明确建议）与 reasons（2–3 项有依据的理由），完整 reason 仍保留，不能机械截断旧判断。
+tasks 包含 feedback 时，先读取本人原话，直接回应其看法和下一步，不必再次询问是否要处理反馈。单岗“地点太偏”不等于全局排除杭州，不改 profiles/candidate；把回应写入 screening.work 并提交该条待办提供的 human_judgment_hash，表示回应的是这版原话。反馈变化时重新读取。只新增 Agent 判断与回应；改写本人原话仍须事先获得同意。反馈完成后任务消失；无变化且无未完成步骤则跳过，不重复深读。"""
     if notion:
         instruction += "\n本次先重新读取档案 sources 中的 Notion 页面。只把有依据的差异保存到 profiles/candidate-proposal：base_version、patch、sources、reason、status=pending；patch 为完整的待修改顶层字段（保留子字段）。不更新 candidate，等待工作台确认。不能读取就记录失败，不能伪造差异。"
     return instruction + "\n当前档案与待处理岗位：\n" + json.dumps(queue, ensure_ascii=False, indent=2)
