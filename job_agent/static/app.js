@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const stages = {pool:'机会池',pending:'内部待办',preparing:'准备投递',applied:'已投递',interview:'面试中',ended:'已结束',trash:'回收站'};
 const colors = {green:'符合条件，值得考虑',yellow:'有不利条件',beige:'旧判断待重核',grey:'已读但有歧义'};
 let records = [], artifacts = [], quota = {version:0,data:{items:[]}}, stage = 'pool', current = null;
-let saving = Promise.resolve(), noteTimer, dirtyNotes = false, noteConflict = null, syncConflict = null, resolvedData = {}, lastChecked;
+let saving = Promise.resolve(), editing = false, editBaseline = {}, editVersion = null, syncConflict = null, resolvedData = {}, lastChecked;
 let quotaRequest = null;
 let profileRecord = null, profileProposal = null;
 const form = $('job-form');
@@ -58,18 +58,30 @@ function fillForm(data) {
   form.elements.qualification.value=data.qualification||'unknown'; form.elements.interest.value=data.interest||'unknown';
 }
 function fillSide() {
-  $('stage-select').value=current?dataStage(current):'pool';
+  if(!editing)$('stage-select').value=current?dataStage(current):'pool';
   $('trash-job').textContent=current && dataStage(current)==='trash'?'从回收站恢复到机会池':'移入回收站';
   $('detail-company').textContent=current?.data.company || '保留线索，稍后补全';
   $('detail-title').textContent=current?.view.title || '保存机会';
   const links=$('source-links'); links.replaceChildren();
   const seenLinks=new Set();
-  for(const [key,label] of [['detail_url','岗位详情 ↗'],['url','原始来源 ↗'],['boss_url','BOSS 来源 ↗']]) {
+  for(const [key,label] of [['detail_url','岗位详情 ↗'],['application_url','投递入口 ↗'],['company_url','公司官网 ↗'],['recruitment_url','招聘目录 ↗'],['url','原始来源 ↗'],['boss_url','BOSS 来源 ↗']]) {
     const url=current?.data[key]; if(!url || !/^https?:\/\//i.test(url))continue;
     if(seenLinks.has(url))continue;
     seenLinks.add(url);
     const a=node('a',label); a.href=url; a.target='_blank'; a.rel='noopener noreferrer'; links.append(a);
   }
+  const d=current?.data||{}, apply=$('apply-link'), company=$('company-link');
+  const action=d.application_url||d.recruitment_url||d.detail_url||d.url||d.boss_url;
+  apply.hidden=!/^https?:\/\//i.test(action||'');
+  if(!apply.hidden){apply.href=action;apply.textContent=d.application_url?'前往投递 ↗':d.recruitment_url?'打开招聘页面 ↗':d.detail_url?'查看岗位详情 ↗':d.url?'查看来源 ↗':'查看 BOSS 来源 ↗';}else apply.removeAttribute('href');
+  $('apply-status').textContent=d.application_url?'':'投递入口待补齐。';
+  company.hidden=!/^https?:\/\//i.test(d.company_url||'');if(!company.hidden)company.href=d.company_url;else company.removeAttribute('href');
+  $('stage-reading').textContent=current?stages[dataStage(current)]:'';
+  $('notes-reading').textContent=d.notes||'暂无备注';
+  $('human-reading').textContent=d.human_judgment?`本人判断：${d.human_judgment}`:'';
+  $('detail-color').textContent=current?`${colors[current.view.color]}${current.view.stale?' · 待重核':''}`:'';
+  $('edit-facts').hidden=!current||editing;
+  for(const id of ['prepare-resume','prepare-interview'])$(id).disabled=!current;
   const box=$('attachments'); box.replaceChildren();
   const ids=current?.data.artifacts || [];
   for(const id of ids) {
@@ -86,10 +98,10 @@ const dimensionLabels={graduation:'毕业资格',education:'学历',major:'专�
 const kindLabels={mandatory:'强制要求',preferred:'优先条件',inferred:'推断',unknown:'未知',unacceptable:'明确不能接受'};
 function fillReading() {
   const d=current.data,v=current.view,work=d.screening?.work;
-  $('read-facts').textContent=[d.city||'地点待确认',d.salary||'薪资待确认',d.education||'学历待确认',d.experience||'经验待确认',`招聘年份：${d.recruitment_year||'未知'}`,`面向届别：${d.target_cohort||'未知'}`,`允许毕业年份：${d.eligible_years||'未知'}`].join(' · ');
+  $('read-facts').textContent=[d.city,d.salary,d.education,d.experience,d.recruitment_year&&`招聘年份：${d.recruitment_year}`,d.target_cohort&&`面向届别：${d.target_cohort}`,d.eligible_years&&`允许毕业年份：${d.eligible_years}`].filter(Boolean).join(' · ');
   $('read-summary').textContent=v.summary||'尚无中文摘要';
   $('translation-status').textContent=v.translation_valid?'完整中文 JD 由 Work 翻译，可展开查看原文。':v.translation_pending?'完整中文 JD 待 Work 补全，当前显示原文；已有标题和摘要不代表完成翻译。':'';
-  $('read-reason').textContent=`${v.stale?'待重核 · ':''}${v.origin} · ${colors[v.color]}：${v.reason}`;
+  $('read-reason').textContent=v.reason;
   const evidence=$('read-evidence');evidence.replaceChildren();
   if(work) {
     if(v.stale)evidence.append(node('p','待重核：保留原判断与依据，等待补充核验。','warning'));
@@ -112,8 +124,17 @@ function fillReading() {
   $('read-source-evidence').textContent=typeof d.qualification_evidence==='string'?d.qualification_evidence:JSON.stringify(d.qualification_evidence||'');
   const problems=$('source-problems');problems.replaceChildren();for(const p of d.source_problems||[])problems.append(node('p',`${p.status==='resolved'?'已核验':'待核验'}：${p.description}`));
 }
-function readingMode() { $('read-pane').hidden=!current;form.hidden=!!current; $('quick-form').hidden=!current; }
-function fillQuick() {for(const f of $('quick-form').elements){if(f.name)f.value=f.name==='tags'?(current.data.tags||[]).join('，'):current.data[f.name]|| (f.name==='interest'?'unknown':'');}}
+function readingMode() { $('read-pane').hidden=!current||editing;form.hidden=!!current; $('quick-form').hidden=!current||!editing; $('edit-facts').hidden=!current||editing; }
+function editValues() {
+  const values={};for(const f of $('quick-form').elements)if(f.name)values[f.name]=f.name==='tags'?f.value.split(/[,，]/).map(s=>s.trim()).filter(Boolean):f.value.trim();return values;
+}
+function fillQuick() {
+  const fields=$('edit-fields');fields.replaceChildren();
+  for(const name of ['company','title','salary','city','education','experience','recruitment_year','target_cohort','eligible_years','cycle','url','detail_url','application_url','company_url','recruitment_url','boss_url','summary','jd','qualification_evidence'])fields.append(form.elements[name].closest('label').cloneNode(true));
+  for(const f of $('quick-form').elements)if(f.name)f.value=f.name==='tags'?(Array.isArray(current.data.tags)?current.data.tags:[]).join('，'):f.name==='stage'?dataStage(current):f.name==='color'?current.data.color||'':typeof current.data[f.name]==='object'?JSON.stringify(current.data[f.name]):current.data[f.name]||'';
+  editBaseline=editValues();editVersion=current.version;$('quick-status').textContent='';
+}
+function endEdit(){editing=false;readingMode();fillSide();}
 async function history() {
   $('history').replaceChildren(); if(!current)return;
   const result=await api(`/api/records/jobs/${encodeURIComponent(current.id)}`);
@@ -123,8 +144,7 @@ async function openJob(record=null) {
   if($('detail').open && !(await flushNotes()))return;
   current=record ? await api(`/api/records/jobs/${encodeURIComponent(record.id)}`).then(r=>r.record) : null;
   $('trash-reason').value=current?.data.rejection_reason||'';
-  fillForm(current?.data || {}); $('notes').value=current?.data.notes||''; dirtyNotes=false; noteConflict=null;
-  $('note-conflict').hidden=true; $('note-status').textContent='编辑后自动保存';
+  editing=false;fillForm(current?.data || {});$('prep-result').hidden=true;
   for(const id of ['form-status','upload-status','prompt-status','prompt','description']) { if('value' in $(id))$(id).value=''; else $(id).textContent=''; }
   fillSide();readingMode();if(current)fillQuick(); if(!$('detail').open)$('detail').showModal(); await history();
 }
@@ -136,31 +156,12 @@ function patchCurrent(patch, extra={}) {
   const targetId=current.id;
   const operation=saving.then(async()=> {
     if(current?.id!==targetId)throw new Error('岗位已切换，请重新编辑');
-    const r=await api(`/api/records/jobs/${encodeURIComponent(targetId)}`,'PATCH',{expected_version:current.version,patch,human_confirm:true,confirmation_reason:'本人在工作台编辑',...extra});
+    const r=await api(`/api/records/jobs/${encodeURIComponent(targetId)}`,'PATCH',{expected_version:current.version,patch,human_confirm:true,confirmation_reason:'本人在工作台编辑',reason:'本人在工作台编辑',...extra});
     current=r; remember(r); fillSide(); render(); return r;
   });
   saving=operation.catch(()=>{}); return operation;
 }
-async function saveNotes() {
-  clearTimeout(noteTimer); if(!current || !dirtyNotes)return true;
-  if(noteConflict)return false;
-  const value=$('notes').value; $('note-status').textContent='正在保存…';
-  try { await patchCurrent({notes:value}); dirtyNotes=$('notes').value!==value; $('note-status').textContent=dirtyNotes?'继续编辑中…':'备注已保存'; if(dirtyNotes)noteTimer=setTimeout(saveNotes,600); return true; }
-  catch(error) {
-    $('note-status').textContent=error.message;
-    if(error.result?.current) { noteConflict=error.result.current; $('other-notes').value=noteConflict.data.notes||''; $('note-conflict').hidden=false; }
-    return false;
-  }
-}
-async function flushNotes() { clearTimeout(noteTimer); await saving; return await saveNotes(); }
-$('notes').oninput=()=>{dirtyNotes=true;$('note-status').textContent='尚未保存…';clearTimeout(noteTimer);noteTimer=setTimeout(saveNotes,600);};
-async function chooseNotes(mode) {
-  const mine=$('notes').value, other=noteConflict.data.notes||'';
-  current=noteConflict; noteConflict=null; $('note-conflict').hidden=true;
-  $('notes').value=mode==='merge'?`${other}\n\n—— 我的补充 ——\n${mine}`:mode==='other'?other:mine;
-  dirtyNotes=true; await saveNotes();
-}
-$('merge-notes').onclick=()=>chooseNotes('merge'); $('use-my-notes').onclick=()=>chooseNotes('mine'); $('use-other-notes').onclick=()=>chooseNotes('other');
+async function flushNotes() {await saving;return true;}
 form.onsubmit=async event=> {
   event.preventDefault(); if(current && !(await flushNotes()))return;
   $('form-status').textContent='正在保存…';
@@ -175,7 +176,7 @@ async function changeStage(requested, patch={}) {
   try {await patchCurrent({...patch,stage:requested},{reason:requested==='trash'?'用户移入回收站':'用户修改求职进度'});toast(`已移至${stages[requested]}`); await history();}
   catch(error) {
     if(error.message.startsWith('quota:')) {
-      quotaRequest={id:current.id,stage:requested};
+      quotaRequest={id:current.id,stage:requested,version:current.version};
       $('quota-warning').textContent=error.message.slice(6);
       $('quota-reason').value=''; $('quota-confirm-status').textContent='';
       $('quota-confirm-dialog').showModal();
@@ -183,7 +184,7 @@ async function changeStage(requested, patch={}) {
     $('stage-select').value=dataStage(current);
   }
 }
-$('stage-select').onchange=()=>changeStage($('stage-select').value);
+
 $('trash-job').onclick=()=>changeStage(dataStage(current)==='trash'?'pool':'trash',dataStage(current)==='trash'?{}:{rejection_reason:$('trash-reason').value.trim(),interest:'no'});
 $('cancel-quota-confirm').onclick=()=>$('quota-confirm-dialog').close();
 $('quota-confirm-form').onsubmit=async event=> {
@@ -192,7 +193,7 @@ $('quota-confirm-form').onsubmit=async event=> {
   try {
     if(current?.id!==quotaRequest?.id)throw new Error('岗位已切换，请重新确认');
     if(!(await flushNotes()))return;
-    await patchCurrent({stage:quotaRequest.stage},{quota_confirm:true,quota_reason:reason});
+    await patchCurrent(quotaRequest.patch||{stage:quotaRequest.stage},{expected_version:quotaRequest.version,quota_confirm:true,quota_reason:reason});endEdit();
     $('quota-confirm-dialog').close();toast('已记录明确确认及原因');await history();
   }catch(error){$('quota-confirm-status').textContent=error.message;}
 };
@@ -206,7 +207,8 @@ $('upload').onchange=async()=> {
 };
 $('generate-prompt').onclick=async()=> {
   if(!(await flushNotes()))return;
-  try { const result=await api(`/api/jobs/${encodeURIComponent(current.id)}/prompt`,'POST',{task:$('task').value,description:$('description').value});$('prompt').value=result.prompt;$('prompt-status').textContent='已生成，可以复制到新会话'; }
+  $('prep-result').hidden=false;$('prompt-status').textContent='正在生成准备内容…';
+  try { const result=await api(`/api/jobs/${encodeURIComponent(current.id)}/prompt`,'POST',{task:$('task').value,description:$('description').value});$('prep-result').hidden=false;$('prompt').value=result.prompt;$('prompt-status').textContent='已生成，可以复制到新会话'; }
   catch(error){$('prompt-status').textContent=error.message;}
 };
 $('copy-prompt').onclick=async()=> {
@@ -214,12 +216,24 @@ $('copy-prompt').onclick=async()=> {
   try {await navigator.clipboard.writeText($('prompt').value);$('prompt-status').textContent='已复制，打开 ChatGPT 后粘贴';}
   catch { $('prompt').focus();$('prompt').select();$('prompt-status').textContent='浏览器未允许自动复制；已选中全文，请按 Ctrl+C'; }
 };
-async function closeDetail() {if(await flushNotes())$('detail').close();else toast('备注尚未保存，请先处理冲突或恢复连接');}
+async function closeDetail() {await saving;editing=false;$('detail').close();}
 $('close-detail').onclick=closeDetail; $('detail').addEventListener('cancel',event=>{event.preventDefault();closeDetail();});
 $('add-button').onclick=()=>openJob(); $('empty-add').onclick=()=>openJob(); $('search').oninput=render; $('color-filter').onchange=render;
 $('hidden-opportunities').onclick=()=>{stage='hidden';render();};
-$('edit-facts').onclick=()=>{fillForm(current.data);$('read-pane').hidden=true;form.hidden=false;};
-$('quick-form').onsubmit=async event=>{event.preventDefault();if(!(await flushNotes()))return;const patch={};for(const f of event.target.elements)if(f.name)patch[f.name]=f.value.trim();patch.tags=patch.tags.split(/[,，]/).map(s=>s.trim()).filter(Boolean);try{await patchCurrent(patch);$('quick-status').textContent='已保存';await refresh();await history();}catch(error){$('quick-status').textContent=error.message;}};
+$('edit-facts').onclick=()=>{fillQuick();editing=true;readingMode();};
+$('cancel-edit').onclick=endEdit;
+for(const task of ['resume','interview'])$('prepare-'+task).onclick=()=>{$('task').value=task;$('generate-prompt').click();};
+$('quick-form').onsubmit=async event=>{
+  event.preventDefault();const values=editValues(),patch={};
+  for(const [key,value] of Object.entries(values))if(JSON.stringify(value)!==JSON.stringify(editBaseline[key]))patch[key]=value;
+  if('color' in patch)patch.color_reason='';
+  try{await patchCurrent(patch,{expected_version:editVersion});endEdit();await refresh();await history();}
+  catch(error){
+    $('quick-status').textContent=error.message;
+    if(error.message.startsWith('quota:')){quotaRequest={id:current.id,patch,version:editVersion};$('quota-warning').textContent=error.message.slice(6);$('quota-reason').value='';$('quota-confirm-status').textContent='';$('quota-confirm-dialog').showModal();}
+    else if(error.status===409)$('quick-status').textContent='岗位已被另一处修改。本次内容仍保留，请复制需要的修改，取消并重新打开后再保存。';
+  }
+};
 $('restore-pool').onclick=async()=>{if(!(await flushNotes()))return;try{await patchCurrent({pool_visibility:'show'});await history();}catch(error){toast(error.message);}};
 $('fold-pool').onclick=async()=>{if(!(await flushNotes()))return;try{await patchCurrent({pool_visibility:'auto'});await history();}catch(error){toast(error.message);}};
 $('report-source').onclick=async()=>{const description=$('source-problem').value.trim();if(!description)return;if(!(await flushNotes()))return;await patchCurrent({source_problems:[...(current.data.source_problems||[]),{id:crypto.randomUUID(),description,status:'pending',reported_at:new Date().toISOString()}]});$('source-problem').value='';await refresh();toast('已保存待核验问题，原文保留');};
@@ -298,7 +312,7 @@ $('resolve-button').onclick=async()=> {
     $('sync-conflict-dialog').close();await refresh();await checkSync();toast('合并结果已保存，两份原始分支仍保留');}
   catch(error){$('resolve-status').textContent=error.message;}
 };
-window.addEventListener('beforeunload',event=>{if(dirtyNotes){event.preventDefault();event.returnValue='';}});
+window.addEventListener('beforeunload',event=>{if(editing&&JSON.stringify(editValues())!==JSON.stringify(editBaseline)){event.preventDefault();event.returnValue='';}});
 window.addEventListener('unhandledrejection',event=>{toast(event.reason?.message||'操作未完成，请重试');});
 for(const [key,label] of Object.entries(stages)) {if(key==='pending')continue;const opt=node('option',label);opt.value=key;$('stage-select').append(opt);}
 refresh().catch(error=>toast(error.message));api('/api/sync','POST',{}).then(checkSync).catch(error=>toast(error.message));setInterval(checkSync,5000);

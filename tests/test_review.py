@@ -101,6 +101,57 @@ class ReviewTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.store.put("jobs", self.job["data"], "fixture", 1)
 
+    def test_workbench_color_without_reason_is_protected_and_can_adopt_work(self):
+        self.save(self.work("ineligible", "mandatory"))
+        self.job = self.store.patch("jobs", "fixture", {"interest": "yes", "human_judgment": "Keep my judgment"}, self.job["version"], _human=True)
+        client = create_app(self.store, Path(self.temp.name)).test_client()
+        headers = {"X-Workspace": "1"}
+        def edit(patch, version=None):
+            return client.patch("/api/records/jobs/fixture", json={"expected_version": version or self.job["version"], "patch": patch, "human_confirm": True, "confirmation_reason": "本人编辑", "reason": "本人编辑"}, headers=headers)
+        for color in ("yellow", "green"):
+            response = edit({"color": color, "color_reason": ""})
+            self.assertEqual(response.status_code, 200)
+            self.job = response.get_json()
+            self.assertEqual(self.job["view"]["color"], color)
+            self.assertEqual(self.job["data"]["judgment_authorship"]["color"], "human")
+            self.assertFalse(self.job["view"]["low_priority"])
+            self.assertEqual(self.job["view"]["reason"], "Fixture assessment")
+        version = self.job["version"]
+        denied = client.patch("/api/worker/records/jobs/fixture", json={"expected_version": version, "patch": {"color": "yellow"}, "reason": "Agent attempt"}, headers=headers)
+        self.assertEqual(denied.status_code, 409)
+        # Worker can update its assessment without taking over the person's color.
+        result = client.patch("/api/worker/records/jobs/fixture", json={"expected_version": version, "patch": {"screening": {"work": {"reason": "Updated assessment"}}}, "reason": "Recheck"}, headers=headers)
+        self.assertEqual(result.status_code, 200)
+        self.job = self.store.get("jobs", "fixture")
+        self.assertEqual(project(self.job, self.profile)["view"]["color"], "green")
+        self.assertEqual(edit({"notes": "Stale overwrite"}, version).status_code, 409)
+        result = edit({"notes": "New note", "tags": ["fixture"], "color": "", "color_reason": ""})
+        self.assertEqual(result.status_code, 200)
+        self.job = result.get_json()
+        self.assertEqual(self.job["view"]["color"], "yellow")
+        self.assertEqual(self.job["view"]["reason"], "Updated assessment")
+        self.assertEqual(self.job["data"]["human_judgment"], "Keep my judgment")
+        self.assertEqual(self.job["data"]["interest"], "yes")
+        self.assertEqual(self.job["data"]["extra"], {"keep": True})
+
+    def test_actual_review_prompt_contains_concise_rules_and_examples(self):
+        client = create_app(self.store, Path(self.temp.name)).test_client()
+        response = client.post("/api/review-prompt", json={}, headers={"X-Workspace": "1"})
+        self.assertEqual(response.status_code, 200)
+        prompt = response.get_json()["prompt"]
+        for text in ("两三句话", "JD 未要求工作年限", "专业要求有矛盾", "医学专业只是优先", "全国出差", "空白不是待办", "不能把普通来源伪称投递入口", "Agent 不得替本人补造理由"):
+            self.assertIn(text, prompt)
+
+    def test_shared_company_and_recruitment_urls_do_not_merge_jobs(self):
+        links = {"company_url": "https://example.invalid/company", "recruitment_url": "https://example.invalid/jobs"}
+        for i in range(2):
+            self.store.put("jobs", {"company": "Shared fixture", "title": f"Role {i}", "detail_url": f"https://example.invalid/#/detail?JobID={i}", **links}, f"shared-{i}")
+        self.assertNotEqual(self.store.get("jobs", "shared-0")["id"], self.store.get("jobs", "shared-1")["id"])
+        self.assertEqual(self.store.get("jobs", "shared-1")["data"]["detail_url"], "https://example.invalid/#/detail?JobID=1")
+        for field in ("application_url", "company_url", "recruitment_url"):
+            with self.assertRaises(ValueError):
+                self.store.patch("jobs", "shared-0", {field: "javascript:bad"}, 1)
+
     def test_saved_graduation_window_requires_its_source(self):
         data = self.work("ineligible")
         data["graduation_windows"] = {"domestic": {"quote": "Graduation: 2027 only", "url": "https://example.invalid/campus"}}

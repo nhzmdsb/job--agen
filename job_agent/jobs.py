@@ -84,7 +84,7 @@ def prepare(db, data, old, record_id, options, conflict_type):
         raise ValueError("请填写公司与岗位名称，招聘入口也可以作为线索保存")
     if data.get("stage", "pool") not in STAGES:
         raise ValueError("未知进度")
-    for key in ("url", "detail_url", "boss_url"):
+    for key in ("url", "detail_url", "boss_url", "application_url", "company_url", "recruitment_url"):
         if data.get(key) and (not isinstance(data[key], str) or urlsplit(data[key]).scheme not in ("http", "https")):
             raise ValueError("来源链接必须以 http:// 或 https:// 开头")
     if data.get("qualification", "unknown") not in ("unknown", "eligible", "disadvantage"):

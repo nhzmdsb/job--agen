@@ -92,10 +92,12 @@ def project(record, profile, store=None):
         stale = True
     origin = "待重核 · 保留原判断" if stale else "Work 判断" if fresh else "内部待办 · 尚未判断"
     reason = work["reason"] if work else "尚未完成判断。"
-    if data.get("color_reason") and data.get("color") in ("green", "yellow", "beige", "grey"):
+    authors = data.get("judgment_authorship", {})
+    manual = data.get("color") in ("green", "yellow", "beige", "grey") and (authors.get("color") == "human" or "color" not in authors or bool(data.get("color_reason")))
+    if manual:
         color = data["color"]
         origin = "人工调整"
-        reason = data["color_reason"]
+        reason = data.get("color_reason") or reason
         if color == "beige" or not fresh:
             stale = True
     translation = data.get("translation", {})
@@ -109,8 +111,8 @@ def project(record, profile, store=None):
             translation_fresh = any(translation.get("source_hash") == content_hash(h["data"]) and translation_hash(h["data"]) == original_hash for h in store.history("jobs", record["id"]))
     translated = bool(translation_fresh and translation.get("title_zh") and translation.get("summary_zh"))
     full_translation = bool(translated and isinstance(translation.get("jd_zh"), str) and translation["jd_zh"].strip())
-    low = bool(fresh and hard_fail(work) and data.get("stage", "pool") == "pool" and data.get("pool_visibility") != "show")
-    recommended = bool(work or (data.get("color_reason") and data.get("color")))
+    low = bool(not manual and fresh and hard_fail(work) and data.get("stage", "pool") == "pool" and data.get("pool_visibility") != "show")
+    recommended = bool(work or manual)
     return {**record, "view": {"color": color, "origin": origin, "reason": reason, "fresh": fresh and not legacy_beige, "stale": stale, "internal_pending": not recommended or not data.get("jd"), "merged": bool(data.get("merged_into")), "low_priority": low, "title": translation["title_zh"] if translated else data.get("title", ""), "summary": translation["summary_zh"] if translated else data.get("summary", ""), "jd": translation["jd_zh"] if full_translation else data.get("jd", ""), "translation_valid": full_translation, "translation_pending": needs_translation(data) and not full_translation, "translation_hash": original_hash, "job_hash": fingerprint}}
 
 
@@ -149,7 +151,14 @@ def processing_prompt(queue, notion=False):
 先读取 worker-context，枚举全部入口，再通过 lookup-jobs 按来源 ID 和链接批量查重；仅补缺失步骤。通过 patch 选择性写入，提供 expected_version；对象递归合并、数组替换。写前重读；冲突重新读取，只重新提交本次确实要修改的字段，保留未知字段、备注、兴趣、人工调整、生命周期、附件和历史。不重复抓取已有完整 JD。
 逐项判断 graduation/education/major/experience/responsibilities/preferences。区分 mandatory/preferred/inferred/unknown/unacceptable；status 为 pass/fail/unknown，每项 reason、jd_quote 必须来自保存原文，profile_fact 引用档案事实或明确未知。毕业窗口也可引用已保存 graduation_windows 中的完整 quote，并记录对应 evidence_url；不能拿招聘活动年份代替毕业窗口。优先条件不是强制要求，实习不能当作正式工作年限；专业相关无法确认、职业方向不同或证据不足不能排除。仅强制要求不符或用户明确不能接受条件可判 ineligible。
 写入 screening.work：decision(eligible/disadvantage/unknown/ineligible)、reason、checks(六维)、questions、profile_version、job_hash、assessed_at。程序辅助检查不作为最终结论。英文或中英混合岗位另外写 translation：title_zh、summary_zh、jd_zh（完整中文 JD，逐段保留职责、要求、优先条件、福利、公司介绍和声明，不用摘要替代、不补造）、source_hash=translation_hash、generated_at，保留原始 title/JD。旧的仅标题与摘要翻译仍需补全 jd_zh。岗位事实或有效已确认条件变化后重判；原文变化才补翻译。待确认信息与备注变化不重判。垃圾桶不恢复，已投递及后续阶段不得自动调整。
-修改本人颜色、颜色理由或 human_judgment 前必须在对话中询问；获得同意后提交 human_confirm=true、confirmation_reason 和预期版本，操作者名称不能代替确认。报告明确建议 → 依据 → 下一步动作。每批在 runs 记录列表发现、详情读取、跳过、重新判断、失败和未完成步骤；无变化不写入，中断后从 /api/review-queue 或 CLI review-pending 续跑。附件不包含在此 Prompt，不能声称已读取真实简历。"""
+修改本人颜色、颜色理由或 human_judgment 前必须在对话中询问；获得同意后提交 human_confirm=true、confirmation_reason、修改 reason 和预期版本，操作者名称不能代替确认。本人在工作台可直接改颜色，不必填写理由；Agent 不得替本人补造理由。报告明确建议 → 依据 → 下一步动作。每批在 runs 记录列表发现、详情读取、跳过、重新判断、失败和未完成步骤；无变化不写入，中断后从 /api/review-queue 或 CLI review-pending 续跑。附件不包含在此 Prompt，不能声称已读取真实简历。
+screening.work.reason 用两三句话直接说明是否值得看或申请及关键依据，summary 与 checks 保持一致；不要把六项检查逐项拼成机器段落。未要求工作年限时写“JD 未要求工作年限”，不能捏造三年门槛，也不能写成原文明确“经验不限”。信息空白不是待办，questions 只记录会改变选择的关键疑点；灰色只用于值得继续考虑但关键条件有歧义的岗位。
+专业判断须对照真实专业与已确认本人专业。专业栏与正文矛盾时同时陈述两处并只保留一个关键问题；“优先”不是“必须”。出差和地点是事实，除非本人明确不能接受，不应自动成为负面结论。确有强制三年医药销售经验而本人不具备时，引用原文并排除。
+虚构简洁判断示例：
+1. 建议考虑。学历、专业和毕业届别符合，客户拓展工作也与你的经历相近。JD 未要求工作年限；工作需要全国出差。
+2. 工作内容值得考虑，但专业要求有矛盾：专业栏列了市场营销和食品相关专业，正文又写专业不限。你是农学专业，需要确认是否接受。
+3. 可以考虑。医学专业只是优先，你可以申请，但专业背景上不占优势。
+链接按用途保存：detail_url 是具体岗位详情，application_url 是投递入口，company_url 是公司官网，recruitment_url 是招聘目录；url 和 boss_url 保留原始来源。没有投递链接就说明投递入口待补齐，不能把普通来源伪称投递入口。不要因改文案重写历史私人判断；后续重核优先复用缓存 JD。"""
     if notion:
         instruction += "\n本次先重新读取档案 sources 中的 Notion 页面。只把有依据的差异保存到 profiles/candidate-proposal：base_version、patch、sources、reason、status=pending；patch 为完整的待修改顶层字段（保留子字段）。不更新 candidate，等待工作台确认。不能读取就记录失败，不能伪造差异。"
     return instruction + "\n当前档案与待处理岗位：\n" + json.dumps(queue, ensure_ascii=False, indent=2)
